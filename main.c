@@ -19,6 +19,9 @@
 
 // ---------------------------- CONFIG ----------------------------
 
+// Firmware tag (prints in debug so you KNOW the flash changed)
+#define FW_TAG "BUFFER_HYST_DBG_V3"
+
 // Switch pins (active low, pull-up)
 #define PIN_L1_IN      24
 #define PIN_L1_OUT     25
@@ -62,7 +65,7 @@
 
 // Timing
 #define STEP_PULSE_US           3
-#define LOW_DELAY_S             0.05f
+#define LOW_DELAY_S             0.40f
 #define SWAP_COOLDOWN_S         0.50f
 #define AUTOLOAD_TIMEOUT_S      6.0f
 #define DEBOUNCE_MS             10
@@ -460,7 +463,7 @@ int main() {
                 lane_start_task(&L2, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
             }
 
-            // Buffer hysterese latch:
+            // -------- Buffer hysterese latch --------
             // Start feed when LOW persists, keep feeding until HIGH.
             if (!buffer_low) {
                 low_since = now; // reset timer whenever LOW is not active
@@ -550,18 +553,27 @@ int main() {
         if (absolute_time_diff_us(last_dbg, now) > DEBUG_PERIOD_US) {
             last_dbg = now;
 
-            int need_feed_dbg = feeding_latched ? 1 : 0;
+            int mid = (!buffer_low && !buffer_high) ? 1 : 0;
+            int low_persist_dbg =
+                (absolute_time_diff_us(low_since, now) > (int64_t)(LOW_DELAY_S * 1000000)) ? 1 : 0;
+
+            DBG_PRINTF("FW=%s\n", FW_TAG);
 
             DBG_PRINTF(
-                "A=%d armed=%d need=%d lat=%d man=%d feed_sps=%d  rev1=%d rev2=%d  "
-                "l1[in=%d out=%d mode=%d]  l2[in=%d out=%d mode=%d]  "
-                "y=%d yclr=%d  bufL=%d bufH=%d\n",
-                active_lane, swap_armed, need_feed_dbg, (int)feeding_latched, any_manual, feed_sps,
-                rev_l1, rev_l2,
+                "A=%d armed=%d need=%d lat=%d lowP=%d mid=%d cooldown=%d  man=%d rev1=%d rev2=%d  "
+                "L1[in=%d out=%d mode=%d]  L2[in=%d out=%d mode=%d]  "
+                "Y=%d clr=%d  bufL=%d bufH=%d feed_sps=%d\n",
+                active_lane, swap_armed,
+                (int)(feeding_latched ? 1 : 0),
+                (int)(feeding_latched ? 1 : 0),
+                low_persist_dbg, mid,
+                (!time_reached(swap_cooldown_until)) ? 1 : 0,
+                any_manual, rev_l1, rev_l2,
                 l1_in_present, l1_out_present, (int)L1.mode,
                 l2_in_present, l2_out_present, (int)L2.mode,
                 y_present, y_clear,
-                buffer_low, buffer_high
+                buffer_low, buffer_high,
+                feed_sps
             );
         }
 #endif
