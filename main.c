@@ -62,7 +62,7 @@
 
 // Timing
 #define STEP_PULSE_US           3
-#define LOW_DELAY_S             0.40f
+#define LOW_DELAY_S             0.05f
 #define SWAP_COOLDOWN_S         0.50f
 #define AUTOLOAD_TIMEOUT_S      6.0f
 #define DEBOUNCE_MS             10
