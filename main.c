@@ -9,7 +9,8 @@
 
 /*
   Standalone NightOwl / ERB RP2040 firmware (2 lanes)
-  - Buffer-driven feed + autoswap + autoload (non-blocking)
+  - Buffer feed with hysteresis latch (start at LOW, stop at HIGH)
+  - Autoswap + autoload (non-blocking)
   - Manual reverse per lane (2 buttons)
   - Potmeter controls FEED rate (steps/sec)
 
@@ -150,6 +151,7 @@ static inline void stepper_init(stepper_t *m, uint en, uint dir, uint step, bool
     gpio_set_dir(m->dir, GPIO_OUT);
     gpio_set_dir(m->step, GPIO_OUT);
 
+    // disable by default
     if (EN_ACTIVE_LOW) gpio_put(m->en, 1);
     else               gpio_put(m->en, 0);
 
@@ -288,7 +290,6 @@ static inline void lane_start_task(lane_t *L, task_mode_t mode, int sps, bool fo
     stepper_enable(&L->m, true);
     stepper_set_dir(&L->m, forward);
 
-    // schedule first step "now"
     L->next_step = get_absolute_time();
 
     if (mode == TASK_AUTOLOAD && timeout_s > 0) {
@@ -307,7 +308,6 @@ static void lane_update_inputs(lane_t *L) {
 }
 
 static void lane_process(lane_t *L) {
-    // Stop conditions
     if (L->mode == TASK_AUTOLOAD) {
         if (lane_out_present(L) || time_reached(L->autoload_deadline)) {
             lane_stop_task(L);
@@ -317,18 +317,14 @@ static void lane_process(lane_t *L) {
 
     if (L->mode == TASK_IDLE) return;
 
-    // Catch-up stepping: don't cap at one pulse per main loop
     int32_t interval = step_interval_us(L->steps_per_sec);
 
     int guard = 0;
     while (time_reached(L->next_step) && guard++ < STEP_CATCHUP_GUARD) {
         stepper_pulse(&L->m);
-
-        // advance from scheduled time to keep timing stable even with jitter
         L->next_step = delayed_by_us(L->next_step, interval);
     }
 
-    // If we hit the guard, we fell behind. Nudge schedule to "now" to avoid endless backlog.
     if (guard >= STEP_CATCHUP_GUARD) {
         L->next_step = get_absolute_time();
     }
@@ -391,6 +387,9 @@ int main() {
     absolute_time_t swap_cooldown_until = get_absolute_time();
     absolute_time_t low_since = get_absolute_time();
 
+    // Buffer hysterese latch
+    bool feeding_latched = false;
+
 #if DEBUG_PRINTS
     absolute_time_t last_dbg = {0};
 #endif
@@ -434,7 +433,7 @@ int main() {
         }
 #endif
 
-        // ---------- Manual reverse per lane (fixed speed) ----------
+        // ---------- Manual reverse per lane ----------
         if (rev_l1) {
             if (L1.mode != TASK_MANUAL || L1.forward != false || L1.steps_per_sec != REV_STEPS_PER_SEC) {
                 lane_start_task(&L1, TASK_MANUAL, REV_STEPS_PER_SEC, false, 0.0f);
@@ -461,10 +460,26 @@ int main() {
                 lane_start_task(&L2, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
             }
 
-            // Buffer hysteresis: need_feed when LOW persists and HIGH not active
-            if (!buffer_low) low_since = now;
-            bool low_persist = absolute_time_diff_us(low_since, now) > (int64_t)(LOW_DELAY_S * 1000000);
-            bool need_feed = buffer_low && low_persist && !buffer_high;
+            // Buffer hysterese latch:
+            // Start feed when LOW persists, keep feeding until HIGH.
+            if (!buffer_low) {
+                low_since = now; // reset timer whenever LOW is not active
+            }
+            bool low_persist =
+                absolute_time_diff_us(low_since, now) > (int64_t)(LOW_DELAY_S * 1000000);
+
+            // HIGH wins: if HIGH active, always stop feeding
+            if (buffer_high) {
+                feeding_latched = false;
+            } else {
+                if (!feeding_latched) {
+                    if (buffer_low && low_persist) {
+                        feeding_latched = true;
+                    }
+                }
+            }
+
+            bool need_feed = feeding_latched;
 
             // Arm swap when active lane IN empty
             if (active_lane == 1 && !l1_in_present) swap_armed = true;
@@ -503,7 +518,12 @@ int main() {
                 if (A->mode == TASK_FEED) lane_stop_task(A);
             }
         } else {
-            // Manual active: stop any auto-feed to avoid fighting
+            // Manual active:
+            // - Stop auto feed tasks to avoid fighting
+            // - Reset buffer latch so it won't instantly resume feeding after manual action
+            feeding_latched = false;
+            low_since = now;
+
             if (L1.mode == TASK_FEED) lane_stop_task(&L1);
             if (L2.mode == TASK_FEED) lane_stop_task(&L2);
         }
@@ -516,7 +536,7 @@ int main() {
         lane_process(&L1);
         lane_process(&L2);
 
-        // LED
+        // LED state
         led_state_t led = LED_IDLE;
         if (any_manual) led = LED_MANUAL_REV;
         else {
@@ -529,11 +549,14 @@ int main() {
 #if DEBUG_PRINTS
         if (absolute_time_diff_us(last_dbg, now) > DEBUG_PERIOD_US) {
             last_dbg = now;
+
+            int need_feed_dbg = feeding_latched ? 1 : 0;
+
             DBG_PRINTF(
-                "A=%d armed=%d man=%d feed_sps=%d  rev1=%d rev2=%d  "
+                "A=%d armed=%d need=%d lat=%d man=%d feed_sps=%d  rev1=%d rev2=%d  "
                 "l1[in=%d out=%d mode=%d]  l2[in=%d out=%d mode=%d]  "
                 "y=%d yclr=%d  bufL=%d bufH=%d\n",
-                active_lane, swap_armed, any_manual, feed_sps,
+                active_lane, swap_armed, need_feed_dbg, (int)feeding_latched, any_manual, feed_sps,
                 rev_l1, rev_l2,
                 l1_in_present, l1_out_present, (int)L1.mode,
                 l2_in_present, l2_out_present, (int)L2.mode,
