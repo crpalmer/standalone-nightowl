@@ -15,7 +15,7 @@ Built for people who prefer firmware that *does the job* instead of having opini
 - Per lane:
   - IN switch (filament present)
   - OUT switch (preloaded / ready)
-- **Filament buffer** with LOW + HIGH switches
+- **Filament buffer** Buffer logic uses latched hysteresis: feed starts at LOW and stops at HIGH.
 - **Y-split switch** for swap safety
 - **Autoload**
   - Insert filament → motor runs until OUT switch
