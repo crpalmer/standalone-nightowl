@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_subdirectory(lib)
 
-add_executable(nightowl-firmware main.c
+add_executable(nightowl-firmware nightowl-firmware.cpp
 )
 
 target_link_libraries(nightowl-firmware pico_stdlib hardware_adc)
