@@ -11,7 +11,6 @@
   Standalone NightOwl / ERB RP2040 firmware (2 lanes)
   - Buffer feed with hysteresis latch (start at LOW, stop at HIGH)
   - Autoswap + autoload (non-blocking)
-  - Manual reverse per lane (2 buttons)
   - Potmeter controls FEED rate (steps/sec)
 
   All switches/buttons wired C/NO to GND -> active LOW with pull-ups.
@@ -31,10 +30,6 @@
 #define PIN_BUF_LOW    6
 #define PIN_BUF_HIGH   7
 
-// Manual REV buttons (active low, pull-up)
-#define PIN_BTN_REV_L1  28
-#define PIN_BTN_REV_L2  29
-
 // Speed pot (ADC) -> FEED rate
 #define USE_FEED_POT        1
 #define PIN_POT_ADC_GPIO    26      // GPIO26 = ADC0
@@ -44,9 +39,6 @@
 // Feed rate range from pot (steps/sec)
 #define FEED_SPS_MIN        1000
 #define FEED_SPS_MAX        9000
-
-// Manual reverse speed (fixed)
-#define REV_STEPS_PER_SEC   4000
 
 // Steppers
 #define PIN_M1_EN      8
@@ -185,7 +177,6 @@ typedef enum {
     LED_FEEDING,
     LED_AUTOLOAD,
     LED_SWAP_ARMED,
-    LED_MANUAL_REV,
     LED_ERROR
 } led_state_t;
 
@@ -218,10 +209,6 @@ static void status_led_update(led_state_t st, int64_t t_us) {
             int64_t phase = t_us % 1000000;
             on = (phase < 250000);
         } break;
-        case LED_MANUAL_REV: {
-            int64_t phase = t_us % 120000;
-            on = (phase < 60000);
-        } break;
         case LED_ERROR: {
             int64_t phase = t_us % 1200000;
             on = (phase < 80000) || (phase >= 160000 && phase < 240000);
@@ -240,7 +227,6 @@ typedef enum {
     TASK_IDLE = 0,
     TASK_AUTOLOAD,
     TASK_FEED,
-    TASK_MANUAL
 } task_mode_t;
 
 typedef struct {
@@ -374,11 +360,6 @@ int main() {
     din_init(&buf_low, PIN_BUF_LOW);
     din_init(&buf_high, PIN_BUF_HIGH);
 
-    // Manual buttons
-    din_t btn_rev_l1, btn_rev_l2;
-    din_init(&btn_rev_l1, PIN_BTN_REV_L1);
-    din_init(&btn_rev_l2, PIN_BTN_REV_L2);
-
     // Lanes
     lane_t L1, L2;
     lane_init(&L1, PIN_L1_IN, PIN_L1_OUT, PIN_M1_EN, PIN_M1_DIR, PIN_M1_STEP, M1_DIR_INVERT);
@@ -411,8 +392,6 @@ int main() {
         din_update(&y_split);
         din_update(&buf_low);
         din_update(&buf_high);
-        din_update(&btn_rev_l1);
-        din_update(&btn_rev_l2);
 
         bool l1_in_present  = lane_in_present(&L1);
         bool l2_in_present  = lane_in_present(&L2);
@@ -425,10 +404,6 @@ int main() {
         bool y_present = active_low_on(&y_split);
         bool y_clear = !y_present;
 
-        bool rev_l1 = active_low_on(&btn_rev_l1);
-        bool rev_l2 = active_low_on(&btn_rev_l2);
-        bool any_manual = rev_l1 || rev_l2;
-
 #if USE_FEED_POT
         if (time_reached(next_pot_read)) {
             next_pot_read = delayed_by_ms(now, POT_READ_PERIOD_MS);
@@ -436,100 +411,71 @@ int main() {
         }
 #endif
 
-        // ---------- Manual reverse per lane ----------
-        if (rev_l1) {
-            if (L1.mode != TASK_MANUAL || L1.forward != false || L1.steps_per_sec != REV_STEPS_PER_SEC) {
-                lane_start_task(&L1, TASK_MANUAL, REV_STEPS_PER_SEC, false, 0.0f);
-            }
-        } else if (L1.mode == TASK_MANUAL) {
-            lane_stop_task(&L1);
-        }
+	// Autoload on IN rising edge
+	if (l1_in_present && !L1.prev_in_present && !l1_out_present && L1.mode == TASK_IDLE) {
+	    lane_start_task(&L1, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
+	}
+	if (l2_in_present && !L2.prev_in_present && !l2_out_present && L2.mode == TASK_IDLE) {
+	    lane_start_task(&L2, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
+	}
 
-        if (rev_l2) {
-            if (L2.mode != TASK_MANUAL || L2.forward != false || L2.steps_per_sec != REV_STEPS_PER_SEC) {
-                lane_start_task(&L2, TASK_MANUAL, REV_STEPS_PER_SEC, false, 0.0f);
-            }
-        } else if (L2.mode == TASK_MANUAL) {
-            lane_stop_task(&L2);
-        }
+	// -------- Buffer hysterese latch --------
+	// Start feed when LOW persists, keep feeding until HIGH.
+	if (!buffer_low) {
+	    low_since = now; // reset timer whenever LOW is not active
+	}
+	bool low_persist =
+	    absolute_time_diff_us(low_since, now) > (int64_t)(LOW_DELAY_S * 1000000);
 
-        // ---------- Normal behavior (only if no manual) ----------
-        if (!any_manual) {
-            // Autoload on IN rising edge
-            if (l1_in_present && !L1.prev_in_present && !l1_out_present && L1.mode == TASK_IDLE) {
-                lane_start_task(&L1, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
-            }
-            if (l2_in_present && !L2.prev_in_present && !l2_out_present && L2.mode == TASK_IDLE) {
-                lane_start_task(&L2, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
-            }
+	// HIGH wins: if HIGH active, always stop feeding
+	if (buffer_high) {
+	    feeding_latched = false;
+	} else {
+	    if (!feeding_latched) {
+		if (buffer_low && low_persist) {
+		    feeding_latched = true;
+		}
+	    }
+	}
 
-            // -------- Buffer hysterese latch --------
-            // Start feed when LOW persists, keep feeding until HIGH.
-            if (!buffer_low) {
-                low_since = now; // reset timer whenever LOW is not active
-            }
-            bool low_persist =
-                absolute_time_diff_us(low_since, now) > (int64_t)(LOW_DELAY_S * 1000000);
+	bool need_feed = feeding_latched;
 
-            // HIGH wins: if HIGH active, always stop feeding
-            if (buffer_high) {
-                feeding_latched = false;
-            } else {
-                if (!feeding_latched) {
-                    if (buffer_low && low_persist) {
-                        feeding_latched = true;
-                    }
-                }
-            }
+	// Arm swap when active lane IN empty
+	if (active_lane == 1 && !l1_in_present) swap_armed = true;
+	if (active_lane == 2 && !l2_in_present) swap_armed = true;
 
-            bool need_feed = feeding_latched;
+	bool in_cooldown = !time_reached(swap_cooldown_until);
 
-            // Arm swap when active lane IN empty
-            if (active_lane == 1 && !l1_in_present) swap_armed = true;
-            if (active_lane == 2 && !l2_in_present) swap_armed = true;
-
-            bool in_cooldown = !time_reached(swap_cooldown_until);
-
-            // Execute swap
-            bool allow_swap = need_feed && swap_armed;
+	// Execute swap
+	bool allow_swap = need_feed && swap_armed;
 #if REQUIRE_Y_CLEAR_FOR_SWAP
-            allow_swap = allow_swap && y_clear;
+	allow_swap = allow_swap && y_clear;
 #endif
-            if (!in_cooldown && allow_swap) {
-                if (active_lane == 1 && l2_out_present) {
-                    active_lane = 2;
-                    swap_armed = false;
-                    swap_cooldown_until = delayed_by_ms(now, (int32_t)(SWAP_COOLDOWN_S * 1000));
-                } else if (active_lane == 2 && l1_out_present) {
-                    active_lane = 1;
-                    swap_armed = false;
-                    swap_cooldown_until = delayed_by_ms(now, (int32_t)(SWAP_COOLDOWN_S * 1000));
-                }
-            }
+	if (!in_cooldown && allow_swap) {
+	    if (active_lane == 1 && l2_out_present) {
+		active_lane = 2;
+		swap_armed = false;
+		swap_cooldown_until = delayed_by_ms(now, (int32_t)(SWAP_COOLDOWN_S * 1000));
+	    } else if (active_lane == 2 && l1_out_present) {
+		active_lane = 1;
+		swap_armed = false;
+		swap_cooldown_until = delayed_by_ms(now, (int32_t)(SWAP_COOLDOWN_S * 1000));
+	    }
+	}
 
-            // Feed management (pot controls feed_sps)
-            lane_t *A = (active_lane == 1) ? &L1 : &L2;
-            bool A_out_ok = (active_lane == 1) ? l1_out_present : l2_out_present;
+	// Feed management (pot controls feed_sps)
+	lane_t *A = (active_lane == 1) ? &L1 : &L2;
+	bool A_out_ok = (active_lane == 1) ? l1_out_present : l2_out_present;
 
-            if (!in_cooldown && need_feed && A_out_ok) {
-                if (A->mode == TASK_IDLE) {
-                    lane_start_task(A, TASK_FEED, feed_sps, true, 0.0f);
-                } else if (A->mode == TASK_FEED) {
-                    A->steps_per_sec = feed_sps; // live update from pot
-                }
-            } else {
-                if (A->mode == TASK_FEED) lane_stop_task(A);
-            }
-        } else {
-            // Manual active:
-            // - Stop auto feed tasks to avoid fighting
-            // - Reset buffer latch so it won't instantly resume feeding after manual action
-            feeding_latched = false;
-            low_since = now;
-
-            if (L1.mode == TASK_FEED) lane_stop_task(&L1);
-            if (L2.mode == TASK_FEED) lane_stop_task(&L2);
-        }
+	if (!in_cooldown && need_feed && A_out_ok) {
+	    if (A->mode == TASK_IDLE) {
+		lane_start_task(A, TASK_FEED, feed_sps, true, 0.0f);
+	    } else if (A->mode == TASK_FEED) {
+		A->steps_per_sec = feed_sps; // live update from pot
+	    }
+	} else {
+	    if (A->mode == TASK_FEED) lane_stop_task(A);
+	}
 
         // Update prev flags
         L1.prev_in_present = l1_in_present;
@@ -541,12 +487,9 @@ int main() {
 
         // LED state
         led_state_t led = LED_IDLE;
-        if (any_manual) led = LED_MANUAL_REV;
-        else {
-            if (swap_armed) led = LED_SWAP_ARMED;
-            if (L1.mode == TASK_AUTOLOAD || L2.mode == TASK_AUTOLOAD) led = LED_AUTOLOAD;
-            if (L1.mode == TASK_FEED || L2.mode == TASK_FEED) led = LED_FEEDING;
-        }
+	if (swap_armed) led = LED_SWAP_ARMED;
+	if (L1.mode == TASK_AUTOLOAD || L2.mode == TASK_AUTOLOAD) led = LED_AUTOLOAD;
+	if (L1.mode == TASK_FEED || L2.mode == TASK_FEED) led = LED_FEEDING;
         status_led_update(led, t_us);
 
 #if DEBUG_PRINTS
@@ -560,7 +503,7 @@ int main() {
             DBG_PRINTF("FW=%s\n", FW_TAG);
 
             DBG_PRINTF(
-                "A=%d armed=%d need=%d lat=%d lowP=%d mid=%d cooldown=%d  man=%d rev1=%d rev2=%d  "
+                "A=%d armed=%d need=%d lat=%d lowP=%d mid=%d cooldown=%d  "
                 "L1[in=%d out=%d mode=%d]  L2[in=%d out=%d mode=%d]  "
                 "Y=%d clr=%d  bufL=%d bufH=%d feed_sps=%d\n",
                 active_lane, swap_armed,
@@ -568,7 +511,6 @@ int main() {
                 (int)(feeding_latched ? 1 : 0),
                 low_persist_dbg, mid,
                 (!time_reached(swap_cooldown_until)) ? 1 : 0,
-                any_manual, rev_l1, rev_l2,
                 l1_in_present, l1_out_present, (int)L1.mode,
                 l2_in_present, l2_out_present, (int)L2.mode,
                 y_present, y_clear,
