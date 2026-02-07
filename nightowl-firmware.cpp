@@ -176,16 +176,19 @@ public:
 		break;
 	    case LOADING:
 		// TODO: I need the y output switch, if triggered then switch to active
-		// TODO: add a timeout
+		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
+		state = ACTIVE;
 		break;
 	    case ACTIVE:
-		// TODO: This should be the y output switch
 		if (! loaded->get()) {
 		    stepper->disable();
-		    state = EMPTY;
+		    state = EMPTYING;
 		}
 		feed = turtleneck->should_feed();
 		break;
+	    case EMPTYING:
+		// TODO: This should wait for the y output switch to go low
+		state = EMPTY;
 	    }
 
 	    lock->unlock();
@@ -201,7 +204,7 @@ public:
 
     bool is_active() {
 	lock->lock();
-	bool ret = (state == ACTIVE);
+	bool ret = (state == ACTIVE || state == EMPTYING);
 	lock->unlock();
 
 	return ret;
@@ -231,6 +234,7 @@ public:
 	case READY: printf("ready"); break;
 	case LOADING: printf("loading"); break;
 	case ACTIVE: printf("active"); break;
+	case EMPTYING: printf("emptying"); break;
 	}
 	printf("\n");
 
@@ -245,7 +249,7 @@ private:
     Turtleneck *turtleneck;
 
     PiMutex *lock;
-    enum { EMPTY, PRE_LOADING, READY, LOADING, ACTIVE } state = EMPTY;
+    enum { EMPTY, PRE_LOADING, READY, LOADING, ACTIVE, EMPTYING } state = EMPTY;
 };
 
 // ---------------------------- MAIN -----------------------------
