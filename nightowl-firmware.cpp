@@ -25,6 +25,7 @@
 #define PIN_L2_OUT     12
 #define PIN_TURTLENECK_FULL  6
 #define PIN_TURTLENECK_EMPTY 7
+#define PIN_Y_OUTPUT   11
 
 // Steppers
 #define PIN_M1_EN      8
@@ -143,7 +144,7 @@ typedef enum {
 
 class Lane : public PiThread {
 public:
-    Lane(Input *present, Input *loaded, Stepper *stepper, Turtleneck *turtleneck, const char *name) : PiThread(name), name(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
+    Lane(Input *present, Input *loaded, Input *y_output, Stepper *stepper, Turtleneck *turtleneck, const char *name) : PiThread(name), name(name), present(present), loaded(loaded), y_output(y_output), stepper(stepper), turtleneck(turtleneck) {
 	lock = new PiMutex();
 	start();
     }
@@ -175,9 +176,8 @@ public:
 	    case READY:
 		break;
 	    case LOADING:
-		// TODO: I need the y output switch, if triggered then switch to active
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
-		state = ACTIVE;
+		if (y_output->get()) state = ACTIVE;
 		break;
 	    case ACTIVE:
 		if (! loaded->get()) {
@@ -187,8 +187,8 @@ public:
 		feed = turtleneck->should_feed();
 		break;
 	    case EMPTYING:
-		// TODO: This should wait for the y output switch to go low
-		state = EMPTY;
+		if (y_output->get()) state = EMPTY;
+		break;
 	    }
 
 	    lock->unlock();
@@ -245,6 +245,7 @@ private:
     const char *name;
     Input *present;
     Input *loaded;
+    Input *y_output;
     Stepper *stepper;
     Turtleneck *turtleneck;
 
@@ -260,7 +261,7 @@ static Turtleneck *create_turtleneck() {
     return new Turtleneck(full, empty);
 }
 
-static Lane *create_lane_1(Turtleneck *turtleneck) {
+static Lane *create_lane_1(Input *y_output, Turtleneck *turtleneck) {
     Output *L1_enable = new GPOutput(PIN_M1_EN);
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
@@ -269,10 +270,10 @@ static Lane *create_lane_1(Turtleneck *turtleneck) {
 
     Input *L1_present = new GPInput(PIN_L1_IN);
     Input *L1_loaded = new GPInput(PIN_L1_OUT);
-    return new Lane(L1_present, L1_loaded, L1_stepper, turtleneck, "lane-1");
+    return new Lane(L1_present, L1_loaded, y_output, L1_stepper, turtleneck, "lane-1");
 }
 
-static Lane *create_lane_2(Turtleneck *turtleneck) {
+static Lane *create_lane_2(Input *y_output, Turtleneck *turtleneck) {
     Output *L2_enable = new GPOutput(PIN_M2_EN);
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
@@ -281,15 +282,16 @@ static Lane *create_lane_2(Turtleneck *turtleneck) {
 
     Input *L2_present = new GPInput(PIN_L2_IN);
     Input *L2_loaded = new GPInput(PIN_L2_OUT);
-    return new Lane(L2_present, L2_loaded, L2_stepper, turtleneck, "lane-2");
+    return new Lane(L2_present, L2_loaded, y_output, L2_stepper, turtleneck, "lane-2");
 }
 
 class Coordinator : public PiThread {
 public:
     Coordinator() : PiThread("coordinator") {
+	Input *y_output = new GPInput(PIN_Y_OUTPUT);
 	turtleneck = create_turtleneck();
-	lane_1 = create_lane_1(turtleneck);
-	lane_2 = create_lane_2(turtleneck);
+	lane_1 = create_lane_1(y_output, turtleneck);
+	lane_2 = create_lane_2(y_output, turtleneck);
 
 	start();
     }
