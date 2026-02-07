@@ -39,9 +39,9 @@
 
 // -------------------------- END CONFIG --------------------------
 
-class TurtleNeck : public PiThread {
+class Turtleneck : public PiThread {
 public:
-    TurtleNeck(Input *full, Input *empty) : PiThread("turtle-neck"), full(full), empty(empty) {
+    Turtleneck(Input *full, Input *empty) : PiThread("turtle-neck"), full(full), empty(empty) {
 	lock = new PiMutex();
 	start();
     }
@@ -143,7 +143,7 @@ typedef enum {
 
 class Lane : public PiThread {
 public:
-    Lane(Input *present, Input *loaded, Stepper *stepper, TurtleNeck *turtleneck, const char *name) : PiThread(name), name(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
+    Lane(Input *present, Input *loaded, Stepper *stepper, Turtleneck *turtleneck, const char *name) : PiThread(name), name(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
 	lock = new PiMutex();
 	start();
     }
@@ -242,7 +242,7 @@ private:
     Input *present;
     Input *loaded;
     Stepper *stepper;
-    TurtleNeck *turtleneck;
+    Turtleneck *turtleneck;
 
     PiMutex *lock;
     enum { EMPTY, PRE_LOADING, READY, LOADING, ACTIVE } state = EMPTY;
@@ -250,13 +250,13 @@ private:
 
 // ---------------------------- MAIN -----------------------------
 
-static TurtleNeck *create_turtleneck() {
+static Turtleneck *create_turtleneck() {
     Input *full = new GPInput(PIN_TURTLENECK_FULL);
     Input *empty = new GPInput(PIN_TURTLENECK_EMPTY);
-    return new TurtleNeck(full, empty);
+    return new Turtleneck(full, empty);
 }
 
-static Lane *create_lane_1(TurtleNeck *turtleneck) {
+static Lane *create_lane_1(Turtleneck *turtleneck) {
     Output *L1_enable = new GPOutput(PIN_M1_EN);
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
@@ -268,7 +268,7 @@ static Lane *create_lane_1(TurtleNeck *turtleneck) {
     return new Lane(L1_present, L1_loaded, L1_stepper, turtleneck, "lane-1");
 }
 
-static Lane *create_lane_2(TurtleNeck *turtleneck) {
+static Lane *create_lane_2(Turtleneck *turtleneck) {
     Output *L2_enable = new GPOutput(PIN_M2_EN);
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
@@ -308,7 +308,7 @@ public:
     }
 
 private:
-	TurtleNeck *turtleneck;
+	Turtleneck *turtleneck;
 	Lane *lane_1;
 	Lane *lane_2;
 };
