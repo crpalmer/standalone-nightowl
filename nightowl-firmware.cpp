@@ -25,7 +25,6 @@
 #define PIN_L1_OUT     25
 #define PIN_L2_IN      22
 #define PIN_L2_OUT     12
-#define PIN_Y_SPLIT    2
 #define PIN_BUF_LOW    6
 #define PIN_BUF_HIGH   7
 
@@ -50,8 +49,6 @@
 #define SWAP_COOLDOWN_S         0.50f
 #define AUTOLOAD_TIMEOUT_S      6.0f
 #define DEBOUNCE_MS             10
-
-#define REQUIRE_Y_CLEAR_FOR_SWAP  1
 
 // Step catch-up guard: max pulses per loop per lane
 #define STEP_CATCHUP_GUARD  50
@@ -255,8 +252,7 @@ int main() {
     sleep_ms(1500);
 
     // Inputs
-    din_t y_split, buf_low, buf_high;
-    din_init(&y_split, PIN_Y_SPLIT);
+    din_t buf_low, buf_high;
     din_init(&buf_low, PIN_BUF_LOW);
     din_init(&buf_high, PIN_BUF_HIGH);
 
@@ -285,7 +281,6 @@ int main() {
         // Update inputs
         lane_update_inputs(&L1);
         lane_update_inputs(&L2);
-        din_update(&y_split);
         din_update(&buf_low);
         din_update(&buf_high);
 
@@ -296,9 +291,6 @@ int main() {
 
         bool buffer_low  = active_low_on(&buf_low);
         bool buffer_high = active_low_on(&buf_high);
-
-        bool y_present = active_low_on(&y_split);
-        bool y_clear = !y_present;
 
 	// Autoload on IN rising edge
 	if (l1_in_present && !L1.prev_in_present && !l1_out_present && L1.mode == TASK_IDLE) {
@@ -337,9 +329,6 @@ int main() {
 
 	// Execute swap
 	bool allow_swap = need_feed && swap_armed;
-#if REQUIRE_Y_CLEAR_FOR_SWAP
-	allow_swap = allow_swap && y_clear;
-#endif
 	if (!in_cooldown && allow_swap) {
 	    if (active_lane == 1 && l2_out_present) {
 		active_lane = 2;
