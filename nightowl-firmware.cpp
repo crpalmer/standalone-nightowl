@@ -98,9 +98,9 @@ private:
 	
 // ---------------------------- Stepper ---------------------------
 
-class NighthawkStepper {
+class Stepper {
 public:
-    NighthawkStepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
+    Stepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
     }
 
     void enable() {
@@ -136,7 +136,7 @@ typedef enum {
 
 class Lane : public PiThread {
 public:
-    Lane(Input *present, Input *loaded, NighthawkStepper *stepper, TurtleNeck *turtleneck, const char *name) : PiThread(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
+    Lane(Input *present, Input *loaded, Stepper *stepper, TurtleNeck *turtleneck, const char *name) : PiThread(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
 	lock = new PiMutex();
 	start();
     }
@@ -217,7 +217,7 @@ public:
 private:
     Input *present;
     Input *loaded;
-    NighthawkStepper *stepper;
+    Stepper *stepper;
     TurtleNeck *turtleneck;
 
     PiMutex *lock;
@@ -236,7 +236,7 @@ static void threads_main(int argc, char **argv) {
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
     L1_step->set_is_inverted(M1_DIR_INVERT);
-    NighthawkStepper *L1_stepper = new NighthawkStepper(L1_enable, L1_dir, L1_step);
+    Stepper *L1_stepper = new Stepper(L1_enable, L1_dir, L1_step);
 
     Input *L1_present = new GPInput(PIN_L1_IN);
     Input *L1_loaded = new GPInput(PIN_L1_OUT);
@@ -246,7 +246,7 @@ static void threads_main(int argc, char **argv) {
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
     L2_step->set_is_inverted(M2_DIR_INVERT);
-    NighthawkStepper *L2_stepper = new NighthawkStepper(L2_enable, L2_dir, L2_step);
+    Stepper *L2_stepper = new Stepper(L2_enable, L2_dir, L2_step);
 
     Input *L2_present = new GPInput(PIN_L2_IN);
     Input *L2_loaded = new GPInput(PIN_L2_OUT);
