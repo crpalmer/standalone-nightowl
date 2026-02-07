@@ -53,10 +53,6 @@
 
 #define REQUIRE_Y_CLEAR_FOR_SWAP  1
 
-// Debug
-#define DEBUG_PRINTS      1
-#define DEBUG_PERIOD_US   500000
-
 // Step catch-up guard: max pulses per loop per lane
 #define STEP_CATCHUP_GUARD  50
 
@@ -254,12 +250,6 @@ static void lane_process(lane_t *L) {
 
 // ---------------------------- MAIN -----------------------------
 
-#if DEBUG_PRINTS
-  #define DBG_PRINTF(...) printf(__VA_ARGS__)
-#else
-  #define DBG_PRINTF(...) do{}while(0)
-#endif
-
 int main() {
     stdio_init_all();
     sleep_ms(1500);
@@ -283,10 +273,6 @@ int main() {
 
     // Buffer hysterese latch
     bool feeding_latched = false;
-
-#if DEBUG_PRINTS
-    absolute_time_t last_dbg = {0};
-#endif
 
     // Pot throttling + live feed rate
     absolute_time_t next_pot_read = get_absolute_time();
@@ -387,34 +373,6 @@ int main() {
         // Process lanes (pulses + autoload stop)
         lane_process(&L1);
         lane_process(&L2);
-
-#if DEBUG_PRINTS
-        if (absolute_time_diff_us(last_dbg, now) > DEBUG_PERIOD_US) {
-            last_dbg = now;
-
-            int mid = (!buffer_low && !buffer_high) ? 1 : 0;
-            int low_persist_dbg =
-                (absolute_time_diff_us(low_since, now) > (int64_t)(LOW_DELAY_S * 1000000)) ? 1 : 0;
-
-            DBG_PRINTF("FW=%s\n", FW_TAG);
-
-            DBG_PRINTF(
-                "A=%d armed=%d need=%d lat=%d lowP=%d mid=%d cooldown=%d  "
-                "L1[in=%d out=%d mode=%d]  L2[in=%d out=%d mode=%d]  "
-                "Y=%d clr=%d  bufL=%d bufH=%d feed_sps=%d\n",
-                active_lane, swap_armed,
-                (int)(feeding_latched ? 1 : 0),
-                (int)(feeding_latched ? 1 : 0),
-                low_persist_dbg, mid,
-                (!time_reached(swap_cooldown_until)) ? 1 : 0,
-                l1_in_present, l1_out_present, (int)L1.mode,
-                l2_in_present, l2_out_present, (int)L2.mode,
-                y_present, y_clear,
-                buffer_low, buffer_high,
-                feed_sps
-            );
-        }
-#endif
 
         sleep_us(MAIN_LOOP_SLEEP_US);
     }
