@@ -57,11 +57,6 @@
 #define DEBUG_PRINTS      1
 #define DEBUG_PERIOD_US   500000
 
-// Status LED (GPIO)
-#define STATUS_LED_MODE   1
-#define PIN_STATUS_LED    17
-#define STATUS_LED_ACTIVE_HIGH 1
-
 // Step catch-up guard: max pulses per loop per lane
 #define STEP_CATCHUP_GUARD  50
 
@@ -158,57 +153,6 @@ static inline void stepper_pulse(stepper_t *m) {
     sleep_us(STEP_PULSE_US);
     gpio_put(m->step, 0);
 }
-
-// ---------------------- Status LED layer ------------------------
-
-typedef enum {
-    LED_IDLE = 0,
-    LED_FEEDING,
-    LED_AUTOLOAD,
-    LED_SWAP_ARMED,
-    LED_ERROR
-} led_state_t;
-
-#if STATUS_LED_MODE == 1
-static inline void status_led_init(void) {
-    gpio_init(PIN_STATUS_LED);
-    gpio_set_dir(PIN_STATUS_LED, GPIO_OUT);
-    gpio_put(PIN_STATUS_LED, STATUS_LED_ACTIVE_HIGH ? 0 : 1);
-}
-
-static inline void status_led_put(bool on) {
-    gpio_put(PIN_STATUS_LED, STATUS_LED_ACTIVE_HIGH ? (on ? 1 : 0) : (on ? 0 : 1));
-}
-
-static void status_led_update(led_state_t st, int64_t t_us) {
-    bool on = false;
-    switch (st) {
-        case LED_IDLE: {
-            int64_t phase = t_us % 1000000;
-            on = (phase < 60000);
-        } break;
-        case LED_FEEDING:
-            on = true;
-            break;
-        case LED_AUTOLOAD: {
-            int64_t phase = t_us % 200000;
-            on = (phase < 100000);
-        } break;
-        case LED_SWAP_ARMED: {
-            int64_t phase = t_us % 1000000;
-            on = (phase < 250000);
-        } break;
-        case LED_ERROR: {
-            int64_t phase = t_us % 1200000;
-            on = (phase < 80000) || (phase >= 160000 && phase < 240000);
-        } break;
-    }
-    status_led_put(on);
-}
-#else
-static inline void status_led_init(void) {}
-static inline void status_led_update(led_state_t st, int64_t t_us) { (void)st; (void)t_us; }
-#endif
 
 // ---------------------------- Lane ------------------------------
 
@@ -319,8 +263,6 @@ static void lane_process(lane_t *L) {
 int main() {
     stdio_init_all();
     sleep_ms(1500);
-
-    status_led_init();
 
     // Inputs
     din_t y_split, buf_low, buf_high;
@@ -445,13 +387,6 @@ int main() {
         // Process lanes (pulses + autoload stop)
         lane_process(&L1);
         lane_process(&L2);
-
-        // LED state
-        led_state_t led = LED_IDLE;
-	if (swap_armed) led = LED_SWAP_ARMED;
-	if (L1.mode == TASK_AUTOLOAD || L2.mode == TASK_AUTOLOAD) led = LED_AUTOLOAD;
-	if (L1.mode == TASK_FEED || L2.mode == TASK_FEED) led = LED_FEEDING;
-        status_led_update(led, t_us);
 
 #if DEBUG_PRINTS
         if (absolute_time_diff_us(last_dbg, now) > DEBUG_PERIOD_US) {
