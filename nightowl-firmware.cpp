@@ -11,7 +11,6 @@
   Standalone NightOwl / ERB RP2040 firmware (2 lanes)
   - Buffer feed with hysteresis latch (start at LOW, stop at HIGH)
   - Autoswap + autoload (non-blocking)
-  - Potmeter controls FEED rate (steps/sec)
 
   All switches/buttons wired C/NO to GND -> active LOW with pull-ups.
 */
@@ -29,16 +28,6 @@
 #define PIN_Y_SPLIT    2
 #define PIN_BUF_LOW    6
 #define PIN_BUF_HIGH   7
-
-// Speed pot (ADC) -> FEED rate
-#define USE_FEED_POT        1
-#define PIN_POT_ADC_GPIO    26      // GPIO26 = ADC0
-#define POT_ADC_CHANNEL     0
-#define POT_READ_PERIOD_MS  50
-
-// Feed rate range from pot (steps/sec)
-#define FEED_SPS_MIN        1000
-#define FEED_SPS_MAX        9000
 
 // Steppers
 #define PIN_M1_EN      8
@@ -319,23 +308,6 @@ static void lane_process(lane_t *L) {
     }
 }
 
-// ------------------------ FEED pot (ADC) ------------------------
-
-#if USE_FEED_POT
-static void feed_pot_init(void) {
-    adc_init();
-    adc_gpio_init(PIN_POT_ADC_GPIO);
-    adc_select_input(POT_ADC_CHANNEL);
-}
-
-static int feed_pot_read_sps(void) {
-    uint16_t raw = adc_read(); // 0..4095
-    int span = (FEED_SPS_MAX - FEED_SPS_MIN);
-    int sps = FEED_SPS_MIN + (int)((raw * (uint32_t)span) / 4095u);
-    return clamp_i(sps, FEED_SPS_MIN, FEED_SPS_MAX);
-}
-#endif
-
 // ---------------------------- MAIN -----------------------------
 
 #if DEBUG_PRINTS
@@ -349,10 +321,6 @@ int main() {
     sleep_ms(1500);
 
     status_led_init();
-
-#if USE_FEED_POT
-    feed_pot_init();
-#endif
 
     // Inputs
     din_t y_split, buf_low, buf_high;
@@ -403,13 +371,6 @@ int main() {
 
         bool y_present = active_low_on(&y_split);
         bool y_clear = !y_present;
-
-#if USE_FEED_POT
-        if (time_reached(next_pot_read)) {
-            next_pot_read = delayed_by_ms(now, POT_READ_PERIOD_MS);
-            feed_sps = feed_pot_read_sps();
-        }
-#endif
 
 	// Autoload on IN rising edge
 	if (l1_in_present && !L1.prev_in_present && !l1_out_present && L1.mode == TASK_IDLE) {
