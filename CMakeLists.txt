@@ -15,7 +15,10 @@ add_subdirectory(lib)
 add_executable(nightowl-firmware nightowl-firmware.cpp
 )
 
-target_link_libraries(nightowl-firmware pico_stdlib hardware_adc)
+target_link_libraries(nightowl-firmware 
+    lib-pi
+    lib-pi-threads
+)
 
 pico_enable_stdio_usb(nightowl-firmware 1)
 pico_enable_stdio_uart(nightowl-firmware 0)

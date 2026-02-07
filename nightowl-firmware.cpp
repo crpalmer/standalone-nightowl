@@ -7,6 +7,9 @@
 #include "hardware/timer.h"
 #include "hardware/adc.h"
 
+#include "gp-input.h"
+#include "gp-output.h"
+
 /*
   Standalone NightOwl / ERB RP2040 firmware (2 lanes)
   - Buffer feed with hysteresis latch (start at LOW, stop at HIGH)
@@ -107,45 +110,31 @@ static inline bool active_low_on(const din_t *d) {
 
 // ---------------------------- Stepper ---------------------------
 
-typedef struct {
-    uint en, dir, step;
-    bool dir_invert;
-} stepper_t;
+class NighthawkStepper {
+public:
+    NighthawkStepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
+    }
 
-static inline void stepper_init(stepper_t *m, uint en, uint dir, uint step, bool dir_invert) {
-    m->en = en; m->dir = dir; m->step = step; m->dir_invert = dir_invert;
+    void enable() {
+	en->set(true);
+    }
 
-    gpio_init(m->en);
-    gpio_init(m->dir);
-    gpio_init(m->step);
+    void disable() {
+	en->set(false);
+    }
 
-    gpio_set_dir(m->en, GPIO_OUT);
-    gpio_set_dir(m->dir, GPIO_OUT);
-    gpio_set_dir(m->step, GPIO_OUT);
+    void step(bool forward = true) {
+	dir->set(forward);
+	step_pin->set(true);
+	us_sleep(STEP_PULSE_US);
+	step_pin->set(false);
+    }
 
-    // disable by default
-    if (EN_ACTIVE_LOW) gpio_put(m->en, 1);
-    else               gpio_put(m->en, 0);
-
-    gpio_put(m->step, 0);
-    gpio_put(m->dir, 0);
-}
-
-static inline void stepper_enable(stepper_t *m, bool on) {
-    if (EN_ACTIVE_LOW) gpio_put(m->en, on ? 0 : 1);
-    else               gpio_put(m->en, on ? 1 : 0);
-}
-
-static inline void stepper_set_dir(stepper_t *m, bool forward) {
-    bool d = forward ^ m->dir_invert;
-    gpio_put(m->dir, d ? 1 : 0);
-}
-
-static inline void stepper_pulse(stepper_t *m) {
-    gpio_put(m->step, 1);
-    sleep_us(STEP_PULSE_US);
-    gpio_put(m->step, 0);
-}
+private:
+    Output *en;
+    Output *dir;
+    Output *step_pin;
+};
 
 // ---------------------------- Lane ------------------------------
 
@@ -155,95 +144,99 @@ typedef enum {
     TASK_FEED,
 } task_mode_t;
 
-typedef struct {
-    din_t in_sw;
-    din_t out_sw;
-    stepper_t m;
+class Lane {
+public:
+    Lane(Input *present, Input *loaded, NighthawkStepper *stepper) : present(present), loaded(loaded), stepper(stepper) {
+	next_step = get_absolute_time();
+	autoload_deadline = get_absolute_time();
+    }
 
-    bool prev_in_present;
+    bool is_present() { return present->get(); }
+    bool is_loaded() { return loaded->get(); }
 
-    task_mode_t mode;
+    void start_task_if_idle(task_mode_t mode, int sps, bool forward, float timeout_s) {
+	if (mode == TASK_IDLE) start_task(mode, sps, forward, timeout_s);
+    }
+
+    void start_task(task_mode_t mode, int sps, bool forward, float timeout_s) {
+	this->mode = mode;
+	this->steps_per_sec = sps;
+	this->forward = forward;
+
+	stepper->enable();
+	stepper->step(forward);
+
+	next_step = get_absolute_time();
+
+	if (mode == TASK_AUTOLOAD && timeout_s > 0) {
+	    autoload_deadline = delayed_by_us(get_absolute_time(), (int64_t)(timeout_s * 1000000));
+	}
+    }
+
+    void stop_task() {
+	mode = TASK_IDLE;
+	stepper->disable();
+    }
+
+    void stop_feeding() {
+	if (mode == TASK_FEED) stop_task();
+    }
+
+    void autoload_if_ready() {
+	if (is_present() && ! prev_in_present && ! is_loaded() && mode == TASK_IDLE) {
+	    start_task(TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
+	}
+    }
+
+    void process() {
+        // Update prev flags
+        prev_in_present = is_present();
+
+	if (mode == TASK_IDLE) return;
+
+	if (mode == TASK_AUTOLOAD) {
+	    if (is_loaded() || time_reached(autoload_deadline)) {
+		stop_task();
+		return;
+	    }
+	}
+
+	int32_t interval = step_interval_us(steps_per_sec);
+
+	int guard = 0;
+	while (time_reached(next_step) && guard++ < STEP_CATCHUP_GUARD) {
+	    stepper->step(forward);
+	    next_step = delayed_by_us(next_step, interval);
+	}
+
+	if (guard >= STEP_CATCHUP_GUARD) {
+	    next_step = get_absolute_time();
+	}
+    }
+
+private:
+    inline int32_t step_interval_us(int sps) {
+	if (sps <= 0) return 1000000;
+	int32_t base = (int32_t)(1000000 / sps);
+	int32_t adj  = base - (int32_t)STEP_PULSE_US;
+	if (adj < 10) adj = 10;
+	return adj;
+    }
+
+private:
+    Input *present;
+    Input *loaded;
+    NighthawkStepper *stepper;
+
+    bool prev_in_present = false;
+
+    task_mode_t mode = TASK_IDLE;
     absolute_time_t next_step;
     absolute_time_t autoload_deadline;
 
-    int steps_per_sec;
-    bool forward;
-} lane_t;
-
-static inline bool lane_in_present(lane_t *L)  { return active_low_on(&L->in_sw); }
-static inline bool lane_out_present(lane_t *L) { return active_low_on(&L->out_sw); }
-
-static void lane_init(lane_t *L,
-                      uint pin_in, uint pin_out,
-                      uint pin_en, uint pin_dir, uint pin_step,
-                      bool dir_invert) {
-    din_init(&L->in_sw, pin_in);
-    din_init(&L->out_sw, pin_out);
-    stepper_init(&L->m, pin_en, pin_dir, pin_step, dir_invert);
-
-    L->prev_in_present = false;
-    L->mode = TASK_IDLE;
-    L->next_step = get_absolute_time();
-    L->autoload_deadline = get_absolute_time();
-    L->steps_per_sec = 0;
-    L->forward = true;
-}
-
-static inline int32_t step_interval_us(int sps) {
-    if (sps <= 0) return 1000000;
-    int32_t base = (int32_t)(1000000 / sps);
-    int32_t adj  = base - (int32_t)STEP_PULSE_US;
-    if (adj < 10) adj = 10;
-    return adj;
-}
-
-static inline void lane_start_task(lane_t *L, task_mode_t mode, int sps, bool forward, float timeout_s) {
-    L->mode = mode;
-    L->steps_per_sec = sps;
-    L->forward = forward;
-
-    stepper_enable(&L->m, true);
-    stepper_set_dir(&L->m, forward);
-
-    L->next_step = get_absolute_time();
-
-    if (mode == TASK_AUTOLOAD && timeout_s > 0) {
-        L->autoload_deadline = delayed_by_us(get_absolute_time(), (int64_t)(timeout_s * 1000000));
-    }
-}
-
-static inline void lane_stop_task(lane_t *L) {
-    L->mode = TASK_IDLE;
-    stepper_enable(&L->m, false);
-}
-
-static void lane_update_inputs(lane_t *L) {
-    din_update(&L->in_sw);
-    din_update(&L->out_sw);
-}
-
-static void lane_process(lane_t *L) {
-    if (L->mode == TASK_AUTOLOAD) {
-        if (lane_out_present(L) || time_reached(L->autoload_deadline)) {
-            lane_stop_task(L);
-            return;
-        }
-    }
-
-    if (L->mode == TASK_IDLE) return;
-
-    int32_t interval = step_interval_us(L->steps_per_sec);
-
-    int guard = 0;
-    while (time_reached(L->next_step) && guard++ < STEP_CATCHUP_GUARD) {
-        stepper_pulse(&L->m);
-        L->next_step = delayed_by_us(L->next_step, interval);
-    }
-
-    if (guard >= STEP_CATCHUP_GUARD) {
-        L->next_step = get_absolute_time();
-    }
-}
+    int steps_per_sec = 0;
+    bool forward = true;
+};
 
 // ---------------------------- MAIN -----------------------------
 
@@ -257,9 +250,25 @@ int main() {
     din_init(&buf_high, PIN_BUF_HIGH);
 
     // Lanes
-    lane_t L1, L2;
-    lane_init(&L1, PIN_L1_IN, PIN_L1_OUT, PIN_M1_EN, PIN_M1_DIR, PIN_M1_STEP, M1_DIR_INVERT);
-    lane_init(&L2, PIN_L2_IN, PIN_L2_OUT, PIN_M2_EN, PIN_M2_DIR, PIN_M2_STEP, M2_DIR_INVERT);
+    Output *L1_enable = new GPOutput(PIN_M1_EN);
+    Output *L1_dir = new GPOutput(PIN_M1_DIR);
+    Output *L1_step = new GPOutput(PIN_M1_STEP);
+    L1_step->set_is_inverted(M1_DIR_INVERT);
+    NighthawkStepper *L1_stepper = new NighthawkStepper(L1_enable, L1_dir, L1_step);
+
+    Input *L1_present = new GPInput(PIN_L1_IN);
+    Input *L1_loaded = new GPInput(PIN_L1_OUT);
+    Lane *L1 = new Lane(L1_present, L1_loaded, L1_stepper);
+
+    Output *L2_enable = new GPOutput(PIN_M2_EN);
+    Output *L2_dir = new GPOutput(PIN_M2_DIR);
+    Output *L2_step = new GPOutput(PIN_M2_STEP);
+    L2_step->set_is_inverted(M2_DIR_INVERT);
+    NighthawkStepper *L2_stepper = new NighthawkStepper(L2_enable, L2_dir, L2_step);
+
+    Input *L2_present = new GPInput(PIN_L2_IN);
+    Input *L2_loaded = new GPInput(PIN_L2_OUT);
+    Lane *L2 = new Lane(L2_present, L2_loaded, L2_stepper);
 
     int active_lane = 1;
     bool swap_armed = false;
@@ -272,33 +281,26 @@ int main() {
 
     // Pot throttling + live feed rate
     absolute_time_t next_pot_read = get_absolute_time();
-    int feed_sps = 5000;
+    const int FEED_SPS = 5000;
 
     while (true) {
         absolute_time_t now = get_absolute_time();
         int64_t t_us = to_us_since_boot(now);
 
         // Update inputs
-        lane_update_inputs(&L1);
-        lane_update_inputs(&L2);
         din_update(&buf_low);
         din_update(&buf_high);
 
-        bool l1_in_present  = lane_in_present(&L1);
-        bool l2_in_present  = lane_in_present(&L2);
-        bool l1_out_present = lane_out_present(&L1);
-        bool l2_out_present = lane_out_present(&L2);
+        bool l1_in_present  = L1->is_present();
+        bool l2_in_present  = L2->is_present();
+        bool l1_out_present = L1->is_loaded();
+        bool l2_out_present = L2->is_loaded();
 
         bool buffer_low  = active_low_on(&buf_low);
         bool buffer_high = active_low_on(&buf_high);
 
-	// Autoload on IN rising edge
-	if (l1_in_present && !L1.prev_in_present && !l1_out_present && L1.mode == TASK_IDLE) {
-	    lane_start_task(&L1, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
-	}
-	if (l2_in_present && !L2.prev_in_present && !l2_out_present && L2.mode == TASK_IDLE) {
-	    lane_start_task(&L2, TASK_AUTOLOAD, AUTOLOAD_STEPS_PER_SEC, true, AUTOLOAD_TIMEOUT_S);
-	}
+	L1->autoload_if_ready();
+	L2->autoload_if_ready();
 
 	// -------- Buffer hysterese latch --------
 	// Start feed when LOW persists, keep feeding until HIGH.
@@ -341,27 +343,17 @@ int main() {
 	    }
 	}
 
-	// Feed management (pot controls feed_sps)
-	lane_t *A = (active_lane == 1) ? &L1 : &L2;
+	Lane *A = (active_lane == 1) ? L1 : L2;
 	bool A_out_ok = (active_lane == 1) ? l1_out_present : l2_out_present;
 
 	if (!in_cooldown && need_feed && A_out_ok) {
-	    if (A->mode == TASK_IDLE) {
-		lane_start_task(A, TASK_FEED, feed_sps, true, 0.0f);
-	    } else if (A->mode == TASK_FEED) {
-		A->steps_per_sec = feed_sps; // live update from pot
-	    }
+	    A->start_task_if_idle(TASK_FEED, FEED_SPS, true, 0.0f);
 	} else {
-	    if (A->mode == TASK_FEED) lane_stop_task(A);
+	    A->stop_feeding();
 	}
 
-        // Update prev flags
-        L1.prev_in_present = l1_in_present;
-        L2.prev_in_present = l2_in_present;
-
-        // Process lanes (pulses + autoload stop)
-        lane_process(&L1);
-        lane_process(&L2);
+        L1->process();
+        L2->process();
 
         sleep_us(MAIN_LOOP_SLEEP_US);
     }
