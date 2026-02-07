@@ -1,4 +1,5 @@
 #include "pi.h"
+#include <cstring>
 #include "gp-input.h"
 #include "gp-output.h"
 #include "pi-threads.h"
@@ -84,6 +85,12 @@ public:
 	return ret;
     }
 
+    void dump_state() {
+	lock->lock();
+	printf("turtleneck: %s sleep_us %d\n", active ? "active" : "idle", sleep_us);
+	lock->unlock();
+    }
+
 private:
     Input *full;
     Input *empty;
@@ -136,7 +143,7 @@ typedef enum {
 
 class Lane : public PiThread {
 public:
-    Lane(Input *present, Input *loaded, Stepper *stepper, TurtleNeck *turtleneck, const char *name) : PiThread(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
+    Lane(Input *present, Input *loaded, Stepper *stepper, TurtleNeck *turtleneck, const char *name) : PiThread(name), name(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
 	lock = new PiMutex();
 	start();
     }
@@ -214,7 +221,24 @@ public:
 	return can_take_over;
     }
 
+    void dump_state() {
+	lock->lock();
+
+	printf("%s: ", name);
+	switch (state) {
+	case EMPTY: printf("empty"); break;
+	case PRE_LOADING: printf("pre-loading"); break;
+	case READY: printf("ready"); break;
+	case LOADING: printf("loading"); break;
+	case ACTIVE: printf("active"); break;
+	}
+	printf("\n");
+
+	lock->unlock();
+    }
+
 private:
+    const char *name;
     Input *present;
     Input *loaded;
     Stepper *stepper;
@@ -226,12 +250,13 @@ private:
 
 // ---------------------------- MAIN -----------------------------
 
-static void threads_main(int argc, char **argv) {
+static TurtleNeck *create_turtleneck() {
     Input *full = new GPInput(PIN_TURTLENECK_FULL);
     Input *empty = new GPInput(PIN_TURTLENECK_EMPTY);
-    TurtleNeck *turtleneck = new TurtleNeck(full, empty);
+    return new TurtleNeck(full, empty);
+}
 
-    // Lanes
+static Lane *create_lane_1(TurtleNeck *turtleneck) {
     Output *L1_enable = new GPOutput(PIN_M1_EN);
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
@@ -240,8 +265,10 @@ static void threads_main(int argc, char **argv) {
 
     Input *L1_present = new GPInput(PIN_L1_IN);
     Input *L1_loaded = new GPInput(PIN_L1_OUT);
-    Lane *L1 = new Lane(L1_present, L1_loaded, L1_stepper, turtleneck, "lane-1");
+    return new Lane(L1_present, L1_loaded, L1_stepper, turtleneck, "lane-1");
+}
 
+static Lane *create_lane_2(TurtleNeck *turtleneck) {
     Output *L2_enable = new GPOutput(PIN_M2_EN);
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
@@ -250,15 +277,57 @@ static void threads_main(int argc, char **argv) {
 
     Input *L2_present = new GPInput(PIN_L2_IN);
     Input *L2_loaded = new GPInput(PIN_L2_OUT);
-    Lane *L2 = new Lane(L2_present, L2_loaded, L2_stepper, turtleneck, "lane-2");
+    return new Lane(L2_present, L2_loaded, L2_stepper, turtleneck, "lane-2");
+}
 
-    while (true) {
-	if (! L1->is_active() && ! L2->is_active()) {
-	    if (! L1->take_over_feeding()) {
-		L2->take_over_feeding();
+class Coordinator : public PiThread {
+public:
+    Coordinator() : PiThread("coordinator") {
+	turtleneck = create_turtleneck();
+	lane_1 = create_lane_1(turtleneck);
+	lane_2 = create_lane_2(turtleneck);
+
+	start();
+    }
+
+    void main() override {
+	while (true) {
+	    if (! lane_1->is_active() && ! lane_2->is_active()) {
+		if (! lane_1->take_over_feeding()) {
+		    lane_2->take_over_feeding();
+		}
+	    }
+	    ms_sleep(100);
+	}
+    }
+
+    void dump_state() {
+	turtleneck->dump_state();
+	lane_1->dump_state();
+	lane_2->dump_state();
+    }
+
+private:
+	TurtleNeck *turtleneck;
+	Lane *lane_1;
+	Lane *lane_2;
+};
+
+static void threads_main(int argc, char **argv) {
+    Coordinator *coordinator = new Coordinator();
+    while (1) {
+	static char line[1024];
+
+	if (pi_readline(line, sizeof(line)) != NULL) {
+	    if (strcmp(line, "threads") == 0) {
+		pi_threads_dump_state();
+	    } else if (strcmp(line, "state") == 0) {
+		coordinator->dump_state();
+	    } else if (strcmp(line, "help") == 0) {
+		printf("state: dump state\n");
+		printf("threads: dump thread state\n");
 	    }
 	}
-	ms_sleep(100);
     }
 }
 
