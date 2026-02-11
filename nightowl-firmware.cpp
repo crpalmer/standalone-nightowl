@@ -265,7 +265,7 @@ static Lane *create_lane_1(Input *y_output, Turtleneck *turtleneck) {
     Output *L1_enable = new GPOutput(PIN_M1_EN);
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
-    L1_step->set_is_inverted(M1_DIR_INVERT);
+    L1_dir->set_is_inverted(M1_DIR_INVERT);
     Stepper *L1_stepper = new Stepper(L1_enable, L1_dir, L1_step);
 
     Input *L1_present = new GPInput(PIN_L1_IN);
@@ -277,7 +277,7 @@ static Lane *create_lane_2(Input *y_output, Turtleneck *turtleneck) {
     Output *L2_enable = new GPOutput(PIN_M2_EN);
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
-    L2_step->set_is_inverted(M2_DIR_INVERT);
+    L2_dir->set_is_inverted(M2_DIR_INVERT);
     Stepper *L2_stepper = new Stepper(L2_enable, L2_dir, L2_step);
 
     Input *L2_present = new GPInput(PIN_L2_IN);
