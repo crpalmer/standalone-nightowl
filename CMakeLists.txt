@@ -22,3 +22,4 @@ target_link_libraries(nightowl-firmware
 
 pico_enable_stdio_usb(nightowl-firmware 1)
 pico_enable_stdio_uart(nightowl-firmware 0)
+pico_add_extra_outputs(nightowl-firmware)
