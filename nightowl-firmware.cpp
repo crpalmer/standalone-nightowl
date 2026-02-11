@@ -19,24 +19,24 @@
 #define FW_TAG "BUFFER_HYST_DBG_V3"
 
 // Switch pins (active low, pull-up)
-#define PIN_L1_IN      24
-#define PIN_L1_OUT     25
-#define PIN_L2_IN      22
-#define PIN_L2_OUT     12
+#define PIN_L1_IN      18
+#define PIN_L1_OUT     12
+#define PIN_L2_IN       2
+#define PIN_L2_OUT      3
 #define PIN_TURTLENECK_FULL  6
 #define PIN_TURTLENECK_EMPTY 7
 #define PIN_Y_OUTPUT   11
 
 // Steppers
-#define PIN_M1_EN      8
-#define PIN_M1_DIR     9
-#define PIN_M1_STEP    10
-#define PIN_M2_EN      14
-#define PIN_M2_DIR     15
-#define PIN_M2_STEP    16
+#define PIN_M1_EN      14
+#define PIN_M1_DIR     15
+#define PIN_M1_STEP    16
+#define PIN_M2_EN       8
+#define PIN_M2_DIR      9
+#define PIN_M2_STEP    10
 
-#define M1_DIR_INVERT  0
-#define M2_DIR_INVERT  1
+#define M1_DIR_INVERT  1
+#define M2_DIR_INVERT  0
 
 // -------------------------- END CONFIG --------------------------
 
@@ -98,7 +98,7 @@ private:
 
     PiMutex *lock;
     bool active = true;
-    int sleep_us = 500;
+    int sleep_us = 100;
 
     static const int MIN_SLEEP_US = 100;
     static const int SLEEP_US_DELTA = 10;
@@ -134,14 +134,6 @@ private:
 
     static const int STEP_PULSE_US = 5;
 };
-
-// ---------------------------- Lane ------------------------------
-
-typedef enum {
-    TASK_IDLE = 0,
-    TASK_AUTOLOAD,
-    TASK_FEED,
-} task_mode_t;
 
 class Lane : public PiThread {
 public:
@@ -216,6 +208,7 @@ public:
     bool take_over_feeding() {
 	bool can_take_over = false;
 
+#if 0
 	lock->lock();
 	if (state == READY) {
 	    can_take_over = true;
@@ -223,6 +216,7 @@ public:
 	    state = LOADING;
 	}
 	lock->unlock();
+#endif
 
 	return can_take_over;
     }
@@ -238,7 +232,11 @@ public:
 	case LOADING: printf("loading"); break;
 	case ACTIVE: printf("active"); break;
 	case EMPTYING: printf("emptying"); break;
+	case MANUAL: printf("manual"); break;
 	}
+	if (present->get()) printf(" present");
+	if (loaded->get()) printf(" loaded");
+	if (y_output->get()) printf(" y-output");
 	printf("\n");
 
 	lock->unlock();
@@ -253,14 +251,22 @@ private:
     Turtleneck *turtleneck;
 
     PiMutex *lock;
-    enum { EMPTY, PRE_LOADING, READY, LOADING, ACTIVE, EMPTYING } state = EMPTY;
+    enum { EMPTY, PRE_LOADING, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
 };
 
 // ---------------------------- MAIN -----------------------------
 
+static GPInput *new_gpinput(int pin) {
+    GPInput *input = new GPInput(pin);
+    input->set_pullup_up();
+    input->set_debounce(1);
+    input->set_is_inverted();
+    return input;
+}
+
 static Turtleneck *create_turtleneck() {
-    Input *full = new GPInput(PIN_TURTLENECK_FULL);
-    Input *empty = new GPInput(PIN_TURTLENECK_EMPTY);
+    Input *full = new_gpinput(PIN_TURTLENECK_FULL);
+    Input *empty = new_gpinput(PIN_TURTLENECK_EMPTY);
     return new Turtleneck(full, empty);
 }
 
@@ -271,8 +277,8 @@ static Lane *create_lane_1(Input *y_output, Turtleneck *turtleneck) {
     L1_dir->set_is_inverted(M1_DIR_INVERT);
     Stepper *L1_stepper = new Stepper(L1_enable, L1_dir, L1_step);
 
-    Input *L1_present = new GPInput(PIN_L1_IN);
-    Input *L1_loaded = new GPInput(PIN_L1_OUT);
+    Input *L1_present = new_gpinput(PIN_L1_IN);
+    Input *L1_loaded = new_gpinput(PIN_L1_OUT);
     return new Lane(L1_present, L1_loaded, y_output, L1_stepper, turtleneck, "lane-1");
 }
 
@@ -283,15 +289,15 @@ static Lane *create_lane_2(Input *y_output, Turtleneck *turtleneck) {
     L2_dir->set_is_inverted(M2_DIR_INVERT);
     Stepper *L2_stepper = new Stepper(L2_enable, L2_dir, L2_step);
 
-    Input *L2_present = new GPInput(PIN_L2_IN);
-    Input *L2_loaded = new GPInput(PIN_L2_OUT);
+    Input *L2_present = new_gpinput(PIN_L2_IN);
+    Input *L2_loaded = new_gpinput(PIN_L2_OUT);
     return new Lane(L2_present, L2_loaded, y_output, L2_stepper, turtleneck, "lane-2");
 }
 
 class Coordinator : public PiThread {
 public:
     Coordinator() : PiThread("coordinator") {
-	Input *y_output = new GPInput(PIN_Y_OUTPUT);
+	Input *y_output = new_gpinput(PIN_Y_OUTPUT);
 	turtleneck = create_turtleneck();
 	lane_1 = create_lane_1(y_output, turtleneck);
 	lane_2 = create_lane_2(y_output, turtleneck);
@@ -323,16 +329,23 @@ private:
 };
 
 static void threads_main(int argc, char **argv) {
+    ms_sleep(2000);
+    printf("Starting\n");
     Coordinator *coordinator = new Coordinator();
+    printf("Created coordinator, entering interactive loop.\n");
     while (1) {
 	static char line[1024];
 
 	if (pi_readline(line, sizeof(line)) != NULL) {
-	    if (strcmp(line, "threads") == 0) {
-		pi_threads_dump_state();
+	    if (strcmp(line, "bootsel") == 0) {
+		printf("Rebooting to bootloader.\n"); fflush(stdout);
+		pi_reboot_bootloader();
 	    } else if (strcmp(line, "state") == 0) {
 		coordinator->dump_state();
-	    } else if (strcmp(line, "help") == 0) {
+	    } else if (strcmp(line, "threads") == 0) {
+		pi_threads_dump_state();
+	    } else if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0) {
+		printf("bootsel: reboot to bootloader mode\n");
 		printf("state: dump state\n");
 		printf("threads: dump thread state\n");
 	    }
