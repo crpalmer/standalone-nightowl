@@ -119,11 +119,12 @@ public:
 	en->set(true);
     }
 
-    void step(bool forward = true) {
+    void step(bool forward = true, int delay_us = 0) {
 	dir->set(forward);
 	step_pin->set(true);
 	us_sleep(STEP_PULSE_US);
 	step_pin->set(false);
+	if (delay_us > STEP_PULSE_US) us_sleep(delay_us - STEP_PULSE_US);
     }
 
 private:
@@ -152,6 +153,7 @@ public:
     void main() override {
 	while (1) {
 	    bool feed = false;
+	    bool step_dir = true;
 
 	    lock->lock();
 
@@ -189,13 +191,14 @@ public:
 	    case EMPTYING:
 		if (y_output->get()) state = EMPTY;
 		break;
+	    case MANUAL:
+		break;
 	    }
 
 	    lock->unlock();
 
 	    if (feed) {
-		stepper->step();
-		us_sleep(turtleneck->get_sleep_us());
+		stepper->step(step_dir, turtleneck->get_sleep_us());
 	    } else {
 		ms_sleep(1);
 	    }
