@@ -112,11 +112,11 @@ public:
     }
 
     void enable() {
-	en->set(true);
+	en->set(false);
     }
 
     void disable() {
-	en->set(false);
+	en->set(true);
     }
 
     void step(bool forward = true) {
