@@ -3,6 +3,8 @@
 #include "gp-input.h"
 #include "gp-output.h"
 #include "pi-threads.h"
+#include "string-utils.h"
+#include "thread-interrupt-notifier.h"
 #include "time-utils.h"
 
 // Switch pins (active low, pull-up)
@@ -29,68 +31,69 @@
 
 #define TRACE_STATE(x) printf("%s => %s\n", name, x)
 
-class Turtleneck : public PiThread {
+class Turtleneck : public ThreadInterruptNotifier {
 public:
-    Turtleneck(Input *full, Input *empty) : PiThread("turtle-neck"), full(full), empty(empty) {
-	lock = new PiMutex();
-	start();
+    Turtleneck(Input *full, Input *empty, Input *y_output) : ThreadInterruptNotifier("turtleneck"), full(full), empty(empty), y_output(y_output) {
+	on_change_safe();
+
+	full->set_notifier(this);
+	empty->set_notifier(this);
+	y_output->set_notifier(this);
     }
 
-    void main() override {
-	while (1) {
-	    lock->lock();
+    void on_change_safe() override {
+	bool f = full->get();
+	bool e = empty->get();
+	bool y = y_output->get();
 
+	if (f) {
 	    if (active) {
-		if (full->get()) {
-		    active = false;
-		    if (sleep_us > MIN_SLEEP_US) sleep_us -= SLEEP_US_DELTA;
-		    else sleep_us = MIN_SLEEP_US;
-		}
-		if (empty->get()) {
-		    sleep_us += SLEEP_US_DELTA;
-		}
-	    } else if (! full->get()) {
-		active = true;
+		active = false;
 	    }
-
-	    lock->unlock();
-
-	    ms_sleep(1);
+	} else if (e) {
+	    active = true;
+	} else {
+	    active = true;
 	}
+
+	full_value = f;
+	empty_value = e;
+	y_output_value = y;
+
+	should_feed_value = active || ! y_output_value;
+    }
+
+    bool has_filament() {
+	return y_output_value;
     }
 
     bool should_feed() {
-	lock->lock();
-	bool ret = active;
-	lock->unlock();
-
-	return ret;
+	return should_feed_value;
     }
 
     int get_sleep_us() {
-	lock->lock();
-	int ret = sleep_us;
-	lock->unlock();
-
-	return ret;
+	return sleep_us;
     }
 
     void dump_state() {
-	lock->lock();
-	printf("turtleneck: %s sleep_us %d\n", active ? "active" : "idle", sleep_us);
-	lock->unlock();
+	printf("turtleneck: %s%s sleep_us %d [", active ? "active" : "idle", should_feed_value ? "(feeding)" : "", sleep_us);
+	if (full_value) printf(" full");
+	if (empty_value) printf(" empty");
+	printf(" ]\ny-output: %s\n", y_output_value ? "filament-detected" : "empty");
     }
 
 private:
     Input *full;
     Input *empty;
+    Input *y_output;
 
-    PiMutex *lock;
+    bool full_value;
+    bool empty_value;
+    bool y_output_value;
+    bool should_feed_value;
+
     bool active = true;
-    int sleep_us = 50;
-
-    static const int MIN_SLEEP_US = 50;
-    static const int SLEEP_US_DELTA = 10;
+    int sleep_us = 500;
 };
 	
 // ---------------------------- Stepper ---------------------------
@@ -98,12 +101,14 @@ private:
 class Stepper {
 public:
     Stepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
-	disable();
+	en->set(! enabled);
     }
 
     void disable() {
-	en->set(true);
-	enabled = false;
+	if (enabled) {
+	    en->set(true);
+	    enabled = false;
+	}
     }
 
     void step(bool forward = true, int delay_us = 0) {
@@ -136,18 +141,68 @@ private:
 
 };
 
+class LaneFilamentState : public ThreadInterruptNotifier {
+public:
+    LaneFilamentState(Input *present, Input *loaded, const char *name) : ThreadInterruptNotifier(name), present(present), loaded(loaded) {
+	lock = new PiMutex();
+	present_value = present->get();
+	loaded_value = loaded->get();
+
+	present->set_notifier(this);
+	loaded->set_notifier(this);
+    }
+
+    void on_change_safe() {
+	bool p = present->get();
+	bool l = loaded->get();
+	lock->lock();
+	present_value = p;
+	loaded_value = l;
+	lock->unlock();
+    }
+
+    bool is_present() {
+	lock->lock();
+	bool ret = present_value;
+	lock->unlock();
+	return ret;
+    }
+
+    bool is_loaded() {
+	lock->lock();
+	bool ret = loaded_value;
+	lock->unlock();
+	return ret;
+    }
+
+    void dump_state() {
+	lock->lock();
+	if (present_value) printf(" present");
+	if (loaded_value) printf(" loaded");
+	lock->unlock();
+    }
+
+private:
+    Input *present;
+    Input *loaded;
+    PiMutex *lock;
+    bool present_value;
+    bool loaded_value;
+};
+
 class Lane : public PiThread {
 public:
-    Lane(Input *present, Input *loaded, Input *y_output, Stepper *stepper, Turtleneck *turtleneck, const char *name) : PiThread(name), name(name), present(present), loaded(loaded), y_output(y_output), stepper(stepper), turtleneck(turtleneck) {
-	lock = new PiMutex();
+    Lane(Input *present, Input *loaded, Stepper *stepper, Turtleneck *turtleneck, const char *name) : PiThread(name), name(name), stepper(stepper), turtleneck(turtleneck) {
+	char *state_name = maprintf("state-%s", name);
+	filament = new LaneFilamentState(present, loaded, state_name);
 	start();
     }
 
     void main() override {
-	if (present->get() && loaded->get()) {
-	    state = ACTIVE;
-	    TRACE_STATE("active (init)");
-	} else if (! present->get() && loaded->get()) {
+	if (filament->is_present() && filament->is_loaded()) {
+	    state = LOADING;
+	    TRACE_STATE("loading (init)");
+	} else if (! filament->is_present() && filament->is_loaded()) {
 	    state = EMPTYING;
 	    TRACE_STATE("emptying (init)");
 	}
@@ -156,22 +211,19 @@ public:
 	    bool feed = false;
 	    bool feed_dir = true;
 
-	    lock->lock();
-
 	    switch (state) {
 	    case EMPTY:
-		if (present->get()) {
+		if (filament->is_present()) {
 		    state = PRE_LOADING;
 		    TRACE_STATE("pre-loading");
 		}
 		break;
 	    case PRE_LOADING:
 		// TODO: add a timeout
-		if (! present->get()) {
-		    stepper->disable();
+		if (! filament->is_present()) {
 		    state = EMPTY;
 		    TRACE_STATE("empty");
-		} else if (loaded->get()) {
+		} else if (filament->is_loaded()) {
 		    state = PRE_LOADING_RETRACT;
 		    TRACE_STATE("pre-loading (retract)");
 		} else {
@@ -179,8 +231,7 @@ public:
 		}
 		break;
 	    case PRE_LOADING_RETRACT:
-		if (! loaded->get()) {
-		    stepper->disable();
+		if (! filament->is_loaded()) {
 		    state = READY;
 		    TRACE_STATE("ready");
 		} else {
@@ -192,7 +243,7 @@ public:
 		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
-		if (y_output->get()) {
+		if (turtleneck->has_filament()) {
 		    state = ACTIVE;
 		    TRACE_STATE("active");
 		} else {
@@ -200,42 +251,37 @@ public:
 		}
 		break;
 	    case ACTIVE:
-		if (! present->get()) {
-		    stepper->disable();
+		if (! filament->is_present()) {
 		    state = EMPTYING;
 		    TRACE_STATE("emptying");
 		} else {
 		    feed = turtleneck->should_feed();
-feed = true;
 		}
 		break;
 	    case EMPTYING:
-		if (! y_output->get()) {
+		if (! turtleneck->has_filament()) {
 		    state = EMPTY;
 		    TRACE_STATE("empty");
 		} else {
 		    feed = turtleneck->should_feed();
-feed = true;
 		}
 		break;
 	    case MANUAL:
 		break;
 	    }
 
-	    lock->unlock();
-
 	    if (feed) {
 		stepper->step(feed_dir, turtleneck->get_sleep_us());
+		yield();
 	    } else {
+		stepper->disable();
 		ms_sleep(1);
 	    }
 	}
     }
 
     bool is_active() {
-	lock->lock();
 	bool ret = (state == LOADING || state == ACTIVE || state == EMPTYING);
-	lock->unlock();
 
 	return ret;
     }
@@ -243,20 +289,16 @@ feed = true;
     bool take_over_feeding() {
 	bool can_take_over = false;
 
-	lock->lock();
 	if (state == READY) {
 	    can_take_over = true;
 	    state = LOADING;
 	    TRACE_STATE("loading (take over feeding)");
 	}
-	lock->unlock();
 
 	return can_take_over;
     }
 
     void dump_state() {
-	lock->lock();
-
 	printf("%s: ", name);
 	switch (state) {
 	case EMPTY: printf("empty"); break;
@@ -268,23 +310,16 @@ feed = true;
 	case EMPTYING: printf("emptying"); break;
 	case MANUAL: printf("manual"); break;
 	}
-	if (present->get()) printf(" present");
-	if (loaded->get()) printf(" loaded");
-	if (y_output->get()) printf(" y-output");
+	filament->dump_state();
 	printf("\n");
-
-	lock->unlock();
     }
 
 private:
     const char *name;
-    Input *present;
-    Input *loaded;
-    Input *y_output;
     Stepper *stepper;
     Turtleneck *turtleneck;
 
-    PiMutex *lock;
+    LaneFilamentState *filament;
     enum { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
 };
 
@@ -301,10 +336,12 @@ static GPInput *new_gpinput(int pin) {
 static Turtleneck *create_turtleneck() {
     Input *full = new_gpinput(PIN_TURTLENECK_FULL);
     Input *empty = new_gpinput(PIN_TURTLENECK_EMPTY);
-    return new Turtleneck(full, empty);
+full->set_is_inverted(false);		    // temporary until it is connected
+    Input *y_output = new_gpinput(PIN_Y_OUTPUT);
+    return new Turtleneck(full, empty, y_output);
 }
 
-static Lane *create_lane_1(Input *y_output, Turtleneck *turtleneck) {
+static Lane *create_lane_1(Turtleneck *turtleneck) {
     Output *L1_enable = new GPOutput(PIN_M1_EN);
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
@@ -313,10 +350,10 @@ static Lane *create_lane_1(Input *y_output, Turtleneck *turtleneck) {
 
     Input *L1_present = new_gpinput(PIN_L1_IN);
     Input *L1_loaded = new_gpinput(PIN_L1_OUT);
-    return new Lane(L1_present, L1_loaded, y_output, L1_stepper, turtleneck, "lane-1");
+    return new Lane(L1_present, L1_loaded, L1_stepper, turtleneck, "lane-1");
 }
 
-static Lane *create_lane_2(Input *y_output, Turtleneck *turtleneck) {
+static Lane *create_lane_2(Turtleneck *turtleneck) {
     Output *L2_enable = new GPOutput(PIN_M2_EN);
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
@@ -325,16 +362,15 @@ static Lane *create_lane_2(Input *y_output, Turtleneck *turtleneck) {
 
     Input *L2_present = new_gpinput(PIN_L2_IN);
     Input *L2_loaded = new_gpinput(PIN_L2_OUT);
-    return new Lane(L2_present, L2_loaded, y_output, L2_stepper, turtleneck, "lane-2");
+    return new Lane(L2_present, L2_loaded, L2_stepper, turtleneck, "lane-2");
 }
 
 class Coordinator : public PiThread {
 public:
     Coordinator() : PiThread("coordinator") {
-	Input *y_output = new_gpinput(PIN_Y_OUTPUT);
 	turtleneck = create_turtleneck();
-	lane_1 = create_lane_1(y_output, turtleneck);
-	lane_2 = create_lane_2(y_output, turtleneck);
+	lane_1 = create_lane_1(turtleneck);
+	lane_2 = create_lane_2(turtleneck);
 
 	start();
     }
