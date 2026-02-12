@@ -98,21 +98,22 @@ private:
 class Stepper {
 public:
     Stepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
-    }
-
-    void enable() {
-	en->set(false);
+	disable();
     }
 
     void disable() {
 	en->set(true);
+	enabled = false;
     }
 
     void step(bool forward = true, int delay_us = 0) {
+	enable();
+
 	dir->set(forward);
 	step_pin->set(true);
 	us_sleep(STEP_PULSE_US);
 	step_pin->set(false);
+
 	if (delay_us > STEP_PULSE_US) us_sleep(delay_us - STEP_PULSE_US);
     }
 
@@ -121,7 +122,18 @@ private:
     Output *dir;
     Output *step_pin;
 
+    bool enabled = false;
+
     static const int STEP_PULSE_US = 5;
+
+private:
+    void enable() {
+	if (! enabled) {
+	    en->set(false);
+	    enabled = true;
+	}
+    }
+
 };
 
 class Lane : public PiThread {
@@ -133,11 +145,9 @@ public:
 
     void main() override {
 	if (present->get() && loaded->get()) {
-	    stepper->enable();
 	    state = ACTIVE;
 	    TRACE_STATE("active (init)");
 	} else if (! present->get() && loaded->get()) {
-	    stepper->enable();
 	    state = EMPTYING;
 	    TRACE_STATE("emptying (init)");
 	}
@@ -146,13 +156,11 @@ public:
 	    bool feed = false;
 	    bool feed_dir = true;
 
-
 	    lock->lock();
 
 	    switch (state) {
 	    case EMPTY:
 		if (present->get()) {
-		    stepper->enable();
 		    state = PRE_LOADING;
 		    TRACE_STATE("pre-loading");
 		}
@@ -238,7 +246,6 @@ feed = true;
 	lock->lock();
 	if (state == READY) {
 	    can_take_over = true;
-	    stepper->enable();
 	    state = LOADING;
 	    TRACE_STATE("loading (take over feeding)");
 	}
