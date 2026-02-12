@@ -5,19 +5,6 @@
 #include "pi-threads.h"
 #include "time-utils.h"
 
-/*
-  Standalone NightOwl / ERB RP2040 firmware (2 lanes)
-  - Buffer feed with hysteresis latch (start at LOW, stop at HIGH)
-  - Autoswap + autoload (non-blocking)
-
-  All switches/buttons wired C/NO to GND -> active LOW with pull-ups.
-*/
-
-// ---------------------------- CONFIG ----------------------------
-
-// Firmware tag (prints in debug so you KNOW the flash changed)
-#define FW_TAG "BUFFER_HYST_DBG_V3"
-
 // Switch pins (active low, pull-up)
 #define PIN_L1_IN      18
 #define PIN_L1_OUT     12
@@ -25,7 +12,7 @@
 #define PIN_L2_OUT      3
 #define PIN_TURTLENECK_FULL  6
 #define PIN_TURTLENECK_EMPTY 7
-#define PIN_Y_OUTPUT   11
+#define PIN_Y_OUTPUT    4
 
 // Steppers
 #define PIN_M1_EN      14
@@ -98,9 +85,9 @@ private:
 
     PiMutex *lock;
     bool active = true;
-    int sleep_us = 100;
+    int sleep_us = 50;
 
-    static const int MIN_SLEEP_US = 100;
+    static const int MIN_SLEEP_US = 50;
     static const int SLEEP_US_DELTA = 10;
 };
 	
@@ -143,9 +130,18 @@ public:
     }
 
     void main() override {
+	if (present->get() && loaded->get()) {
+	    stepper->enable();
+	    state = ACTIVE;
+	} else if (! present->get() && loaded->get()) {
+	    stepper->enable();
+	    state = EMPTYING;
+	}
+
 	while (1) {
 	    bool feed = false;
-	    bool step_dir = true;
+	    bool feed_dir = true;
+
 
 	    lock->lock();
 
@@ -162,26 +158,44 @@ public:
 		    stepper->disable();
 		    state = EMPTY;
 		} else if (loaded->get()) {
+		    state = PRE_LOADING_RETRACT;
+		} else {
+		    feed = true;
+		}
+		break;
+	    case PRE_LOADING_RETRACT:
+		if (! loaded->get()) {
 		    stepper->disable();
 		    state = READY;
+		} else {
+		    feed = true;
+		    feed_dir = false;
 		}
-		feed = true;
 		break;
 	    case READY:
 		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
-		if (y_output->get()) state = ACTIVE;
+		if (y_output->get()) {
+		    state = ACTIVE;
+		} else {
+		    feed = true;
+		}
 		break;
 	    case ACTIVE:
-		if (! loaded->get()) {
+		if (! present->get()) {
 		    stepper->disable();
 		    state = EMPTYING;
+		} else {
+		    feed = turtleneck->should_feed();
 		}
-		feed = turtleneck->should_feed();
 		break;
 	    case EMPTYING:
-		if (y_output->get()) state = EMPTY;
+		if (! y_output->get()) {
+		    state = EMPTY;
+		} else {
+		    feed = turtleneck->should_feed();
+		}
 		break;
 	    case MANUAL:
 		break;
@@ -190,7 +204,7 @@ public:
 	    lock->unlock();
 
 	    if (feed) {
-		stepper->step(step_dir, turtleneck->get_sleep_us());
+		stepper->step(feed_dir, turtleneck->get_sleep_us());
 	    } else {
 		ms_sleep(1);
 	    }
@@ -199,7 +213,7 @@ public:
 
     bool is_active() {
 	lock->lock();
-	bool ret = (state == ACTIVE || state == EMPTYING);
+	bool ret = (state == LOADING || state == ACTIVE || state == EMPTYING);
 	lock->unlock();
 
 	return ret;
@@ -208,7 +222,6 @@ public:
     bool take_over_feeding() {
 	bool can_take_over = false;
 
-#if 0
 	lock->lock();
 	if (state == READY) {
 	    can_take_over = true;
@@ -216,7 +229,6 @@ public:
 	    state = LOADING;
 	}
 	lock->unlock();
-#endif
 
 	return can_take_over;
     }
@@ -228,6 +240,7 @@ public:
 	switch (state) {
 	case EMPTY: printf("empty"); break;
 	case PRE_LOADING: printf("pre-loading"); break;
+	case PRE_LOADING_RETRACT: printf("pre-loading(retract)"); break;
 	case READY: printf("ready"); break;
 	case LOADING: printf("loading"); break;
 	case ACTIVE: printf("active"); break;
@@ -251,7 +264,7 @@ private:
     Turtleneck *turtleneck;
 
     PiMutex *lock;
-    enum { EMPTY, PRE_LOADING, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
+    enum { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
 };
 
 // ---------------------------- MAIN -----------------------------
@@ -348,6 +361,8 @@ static void threads_main(int argc, char **argv) {
 		printf("bootsel: reboot to bootloader mode\n");
 		printf("state: dump state\n");
 		printf("threads: dump thread state\n");
+	    } else {
+		printf("help or ? for usage\n");
 	    }
 	}
     }
@@ -357,5 +372,3 @@ int main(int argc, char **argv) {
     pi_init_with_threads(threads_main, argc, argv);
     return 0;
 }
-
-
