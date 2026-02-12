@@ -27,6 +27,8 @@
 
 // -------------------------- END CONFIG --------------------------
 
+#define TRACE_STATE(x) printf("%s => %s\n", name, x)
+
 class Turtleneck : public PiThread {
 public:
     Turtleneck(Input *full, Input *empty) : PiThread("turtle-neck"), full(full), empty(empty) {
@@ -133,9 +135,11 @@ public:
 	if (present->get() && loaded->get()) {
 	    stepper->enable();
 	    state = ACTIVE;
+	    TRACE_STATE("active (init)");
 	} else if (! present->get() && loaded->get()) {
 	    stepper->enable();
 	    state = EMPTYING;
+	    TRACE_STATE("emptying (init)");
 	}
 
 	while (1) {
@@ -150,6 +154,7 @@ public:
 		if (present->get()) {
 		    stepper->enable();
 		    state = PRE_LOADING;
+		    TRACE_STATE("pre-loading");
 		}
 		break;
 	    case PRE_LOADING:
@@ -157,8 +162,10 @@ public:
 		if (! present->get()) {
 		    stepper->disable();
 		    state = EMPTY;
+		    TRACE_STATE("empty");
 		} else if (loaded->get()) {
 		    state = PRE_LOADING_RETRACT;
+		    TRACE_STATE("pre-loading (retract)");
 		} else {
 		    feed = true;
 		}
@@ -167,6 +174,7 @@ public:
 		if (! loaded->get()) {
 		    stepper->disable();
 		    state = READY;
+		    TRACE_STATE("ready");
 		} else {
 		    feed = true;
 		    feed_dir = false;
@@ -178,6 +186,7 @@ public:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
 		if (y_output->get()) {
 		    state = ACTIVE;
+		    TRACE_STATE("active");
 		} else {
 		    feed = true;
 		}
@@ -186,6 +195,7 @@ public:
 		if (! present->get()) {
 		    stepper->disable();
 		    state = EMPTYING;
+		    TRACE_STATE("emptying");
 		} else {
 		    feed = turtleneck->should_feed();
 		}
@@ -193,6 +203,7 @@ public:
 	    case EMPTYING:
 		if (! y_output->get()) {
 		    state = EMPTY;
+		    TRACE_STATE("empty");
 		} else {
 		    feed = turtleneck->should_feed();
 		}
@@ -227,6 +238,7 @@ public:
 	    can_take_over = true;
 	    stepper->enable();
 	    state = LOADING;
+	    TRACE_STATE("loading (take over feeding)");
 	}
 	lock->unlock();
 
