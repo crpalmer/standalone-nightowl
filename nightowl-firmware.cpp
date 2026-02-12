@@ -198,6 +198,7 @@ public:
 		    TRACE_STATE("emptying");
 		} else {
 		    feed = turtleneck->should_feed();
+feed = true;
 		}
 		break;
 	    case EMPTYING:
@@ -206,6 +207,7 @@ public:
 		    TRACE_STATE("empty");
 		} else {
 		    feed = turtleneck->should_feed();
+feed = true;
 		}
 		break;
 	    case MANUAL:
