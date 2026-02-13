@@ -93,7 +93,7 @@ private:
     bool should_feed_value;
 
     bool active = true;
-    int sleep_us = 500;
+    int sleep_us = 100;
 };
 	
 // ---------------------------- Stepper ---------------------------
@@ -210,6 +210,7 @@ public:
 	while (1) {
 	    bool feed = false;
 	    bool feed_dir = true;
+	    int sleep_us = turtleneck->get_sleep_us();
 
 	    switch (state) {
 	    case EMPTY:
@@ -228,6 +229,7 @@ public:
 		    TRACE_STATE("pre-loading (retract)");
 		} else {
 		    feed = true;
+		    sleep_us = 500;
 		}
 		break;
 	    case PRE_LOADING_RETRACT:
@@ -237,6 +239,7 @@ public:
 		} else {
 		    feed = true;
 		    feed_dir = false;
+		    sleep_us = 1000;
 		}
 		break;
 	    case READY:
@@ -271,7 +274,7 @@ public:
 	    }
 
 	    if (feed) {
-		stepper->step(feed_dir, turtleneck->get_sleep_us());
+		stepper->step(feed_dir, sleep_us);
 		yield();
 	    } else {
 		stepper->disable();
