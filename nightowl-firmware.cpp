@@ -12,8 +12,8 @@
 #define PIN_L1_OUT     12
 #define PIN_L2_IN       2
 #define PIN_L2_OUT      3
-#define PIN_TURTLENECK_FULL  6
-#define PIN_TURTLENECK_EMPTY 7
+#define PIN_TURTLENECK_FULL  25
+#define PIN_TURTLENECK_EMPTY 24
 #define PIN_Y_OUTPUT    4
 
 // Steppers
@@ -52,7 +52,10 @@ public:
 	    }
 	} else if (e) {
 	    active = true;
-	} else {
+	}
+
+	if (y && ! y_output_value) {
+	    // We just received filament, buffer is in an unknown state
 	    active = true;
 	}
 
@@ -339,7 +342,6 @@ static GPInput *new_gpinput(int pin) {
 static Turtleneck *create_turtleneck() {
     Input *full = new_gpinput(PIN_TURTLENECK_FULL);
     Input *empty = new_gpinput(PIN_TURTLENECK_EMPTY);
-full->set_is_inverted(false);		    // temporary until it is connected
     Input *y_output = new_gpinput(PIN_Y_OUTPUT);
     return new Turtleneck(full, empty, y_output);
 }
