@@ -1,5 +1,6 @@
 #include "pi.h"
 #include <cstring>
+#include <math.h>
 #include "gp-input.h"
 #include "gp-output.h"
 #include "pi-threads.h"
@@ -27,9 +28,21 @@
 #define M1_DIR_INVERT  1
 #define M2_DIR_INVERT  0
 
+// Configuration Values
+
+#define STEPS_PER_MM	415
+#define PRELOAD_SPEED	2		// mm/sec
+#define LOADING_SPEED	20
+#define REFILL_SPEED	20
+
 // -------------------------- END CONFIG --------------------------
 
 #define TRACE_STATE(x) printf("%s => %s\n", name, x)
+
+static us_time_t us_delay_for(int mm_sec) {
+    us_time_t steps_per_sec = mm_sec * STEPS_PER_MM;
+    return 1000000/steps_per_sec;
+}
 
 class Turtleneck : public ThreadInterruptNotifier {
 public:
@@ -74,12 +87,8 @@ public:
 	return should_feed_value;
     }
 
-    int get_sleep_us() {
-	return sleep_us;
-    }
-
     void dump_state() {
-	printf("turtleneck: %s%s sleep_us %d [", active ? "active" : "idle", should_feed_value ? "(feeding)" : "", sleep_us);
+	printf("turtleneck: %s%s [", active ? "active" : "idle", should_feed_value ? "(feeding)" : "");
 	if (full_value) printf(" full");
 	if (empty_value) printf(" empty");
 	printf(" ]\ny-output: %s\n", y_output_value ? "filament-detected" : "empty");
@@ -96,7 +105,6 @@ private:
     bool should_feed_value;
 
     bool active = true;
-    int sleep_us = 100;
 };
 	
 // ---------------------------- Stepper ---------------------------
@@ -114,14 +122,16 @@ public:
 	}
     }
 
-    void step(bool forward = true, int delay_us = 0) {
-	enable();
+    void step(int feed) {
+	if (! feed) return;
 
-	dir->set(forward);
+	enable();
+	dir->set(feed > 0);
 	step_pin->set(true);
 	us_sleep(STEP_PULSE_US);
 	step_pin->set(false);
 
+	us_time_t delay_us = us_delay_for(fabs(feed));
 	if (delay_us > STEP_PULSE_US) us_sleep(delay_us - STEP_PULSE_US);
     }
 
@@ -211,9 +221,7 @@ public:
 	}
 
 	while (1) {
-	    bool feed = false;
-	    bool feed_dir = true;
-	    int sleep_us = turtleneck->get_sleep_us();
+	    int feed = 0;
 
 	    switch (state) {
 	    case EMPTY:
@@ -231,8 +239,7 @@ public:
 		    state = PRE_LOADING_RETRACT;
 		    TRACE_STATE("pre-loading (retract)");
 		} else {
-		    feed = true;
-		    sleep_us = 500;
+		    feed = PRELOAD_SPEED;
 		}
 		break;
 	    case PRE_LOADING_RETRACT:
@@ -240,9 +247,7 @@ public:
 		    state = READY;
 		    TRACE_STATE("ready");
 		} else {
-		    feed = true;
-		    feed_dir = false;
-		    sleep_us = 1000;
+		    feed = -PRELOAD_SPEED;
 		}
 		break;
 	    case READY:
@@ -253,7 +258,7 @@ public:
 		    state = ACTIVE;
 		    TRACE_STATE("active");
 		} else {
-		    feed = true;
+		    feed = LOADING_SPEED;
 		}
 		break;
 	    case ACTIVE:
@@ -261,7 +266,7 @@ public:
 		    state = EMPTYING;
 		    TRACE_STATE("emptying");
 		} else {
-		    feed = turtleneck->should_feed();
+		    if (turtleneck->should_feed()) feed = REFILL_SPEED;
 		}
 		break;
 	    case EMPTYING:
@@ -269,7 +274,7 @@ public:
 		    state = EMPTY;
 		    TRACE_STATE("empty");
 		} else {
-		    feed = turtleneck->should_feed();
+		    if (turtleneck->should_feed()) feed = REFILL_SPEED;
 		}
 		break;
 	    case MANUAL:
@@ -277,7 +282,7 @@ public:
 	    }
 
 	    if (feed) {
-		stepper->step(feed_dir, sleep_us);
+		stepper->step(feed);
 		yield();
 	    } else {
 		stepper->disable();
