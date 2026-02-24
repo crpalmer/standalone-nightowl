@@ -46,65 +46,69 @@ static us_time_t us_delay_for(int mm_sec) {
 
 class Turtleneck : public ThreadInterruptNotifier {
 public:
-    Turtleneck(Input *full, Input *empty, Input *y_output) : ThreadInterruptNotifier("turtleneck"), full(full), empty(empty), y_output(y_output) {
+    Turtleneck(Input *full_switch, Input *empty_switch, Input *y_output_switch) : ThreadInterruptNotifier("turtleneck"), full_switch(full_switch), empty_switch(empty_switch), y_output_switch(y_output_switch) {
 	on_change_safe();
 
-	full->set_notifier(this);
-	empty->set_notifier(this);
-	y_output->set_notifier(this);
+	full_switch->set_notifier(this);
+	empty_switch->set_notifier(this);
+	y_output_switch->set_notifier(this);
     }
 
     void on_change_safe() override {
-	bool f = full->get();
-	bool e = empty->get();
-	bool y = y_output->get();
+	full = full_switch->get();
+	empty = empty_switch->get();
+	y_output = y_output_switch->get();
 
-	if (f) {
-	    if (active) {
-		active = false;
-	    }
-	} else if (e) {
-	    active = true;
+	switch (state) {
+	case NO_FILAMENT:
+	    if (y_output) state = FEEDING;
+	    break;
+	case FEEDING:
+	    if (! y_output) state = NO_FILAMENT;
+	    else if (full) state = WAITING;
+	    break;
+	case WAITING:
+	    if (! y_output) state = NO_FILAMENT;
+	    else if (empty) state = FEEDING;
+	    break;
 	}
-
-	if (y && ! y_output_value) {
-	    // We just received filament, buffer is in an unknown state
-	    active = true;
-	}
-
-	full_value = f;
-	empty_value = e;
-	y_output_value = y;
-
-	should_feed_value = active || ! y_output_value;
     }
 
     bool has_filament() {
-	return y_output_value;
+	return state != NO_FILAMENT;
     }
 
     bool should_feed() {
-	return should_feed_value;
+	return state == FEEDING;
     }
 
     void dump_state() {
-	printf("turtleneck: %s%s [", active ? "active" : "idle", should_feed_value ? "(feeding)" : "");
-	if (full_value) printf(" full");
-	if (empty_value) printf(" empty");
-	printf(" ]\ny-output: %s\n", y_output_value ? "filament-detected" : "empty");
+	printf("turtleneck: %s [", state_to_string().c_str());
+	if (full) printf(" full");
+	if (empty) printf(" empty");
+	printf(" ], y-output: %s\n", y_output ? "filament-in-y" : "no-filament-in-y");
     }
 
 private:
-    Input *full;
-    Input *empty;
-    Input *y_output;
+    Input *full_switch;
+    Input *empty_switch;
+    Input *y_output_switch;
 
-    bool full_value;
-    bool empty_value;
-    bool y_output_value;
-    bool should_feed_value;
+    bool full = false;
+    bool empty = false;
+    bool y_output = false;
 
-    bool active = true;
+    enum { NO_FILAMENT, FEEDING, WAITING } state = NO_FILAMENT;
+
+    std::string state_to_string() {
+	switch(state) {
+	case NO_FILAMENT: return "no-filament";
+	case FEEDING: return "feeding";
+	case WAITING: return "waiting";
+	}
+	assert(0);
+	return "";
+    }
 };
 	
 // ---------------------------- Stepper ---------------------------
