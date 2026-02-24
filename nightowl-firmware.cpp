@@ -1,4 +1,4 @@
-#include "pi.h"
+ #include "pi.h"
 #include <cstring>
 #include <math.h>
 #include "gp-input.h"
@@ -83,7 +83,7 @@ public:
     }
 
     void dump_state() {
-	printf("turtleneck: %s [", state_to_string().c_str());
+	printf("turtleneck: %s [", state_to_string());
 	if (full) printf(" full");
 	if (empty) printf(" empty");
 	printf(" ], y-output: %s\n", y_output ? "filament-in-y" : "no-filament-in-y");
@@ -100,14 +100,13 @@ private:
 
     enum { NO_FILAMENT, FEEDING, WAITING } state = NO_FILAMENT;
 
-    std::string state_to_string() {
+    const char *state_to_string() {
 	switch(state) {
 	case NO_FILAMENT: return "no-filament";
 	case FEEDING: return "feeding";
 	case WAITING: return "waiting";
 	}
-	assert(0);
-	return "";
+	return "** INVALID STATE **";
     }
 };
 	
@@ -216,74 +215,50 @@ public:
     }
 
     void main() override {
-	if (filament->is_present() && filament->is_loaded()) {
-	    state = LOADING;
-	    TRACE_STATE("loading (init)");
-	} else if (! filament->is_present() && filament->is_loaded()) {
-	    state = EMPTYING;
-	    TRACE_STATE("emptying (init)");
-	}
+	if (filament->is_present() && filament->is_loaded()) state = LOADING;
+	else if (! filament->is_present() && filament->is_loaded()) state = EMPTYING;
+	else state = EMPTY;
+
+        printf("Initial state: %s\n", state_to_string(state));
 
 	while (1) {
 	    int feed = 0;
+	    enum State old_state = state;
 
 	    switch (state) {
 	    case EMPTY:
-		if (filament->is_present()) {
-		    state = PRE_LOADING;
-		    TRACE_STATE("pre-loading");
-		}
+		if (filament->is_present()) state = PRE_LOADING;
 		break;
 	    case PRE_LOADING:
 		// TODO: add a timeout
-		if (! filament->is_present()) {
-		    state = EMPTY;
-		    TRACE_STATE("empty");
-		} else if (filament->is_loaded()) {
-		    state = PRE_LOADING_RETRACT;
-		    TRACE_STATE("pre-loading (retract)");
-		} else {
-		    feed = PRELOAD_SPEED;
-		}
+		if (! filament->is_present()) state = EMPTY;
+		else if (filament->is_loaded()) state = PRE_LOADING_RETRACT;
+		else feed = PRELOAD_SPEED;
 		break;
 	    case PRE_LOADING_RETRACT:
-		if (! filament->is_loaded()) {
-		    state = READY;
-		    TRACE_STATE("ready");
-		} else {
-		    feed = -PRELOAD_SPEED;
-		}
+		if (! filament->is_loaded()) state = READY;
+		else feed = -PRELOAD_SPEED;
 		break;
 	    case READY:
 		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
-		if (turtleneck->has_filament()) {
-		    state = ACTIVE;
-		    TRACE_STATE("active");
-		} else {
-		    feed = LOADING_SPEED;
-		}
+		if (turtleneck->has_filament()) state = ACTIVE;
+		else feed = LOADING_SPEED;
 		break;
 	    case ACTIVE:
-		if (! filament->is_present()) {
-		    state = EMPTYING;
-		    TRACE_STATE("emptying");
-		} else {
-		    if (turtleneck->should_feed()) feed = REFILL_SPEED;
-		}
+		if (! filament->is_present()) state = EMPTYING;
+		else if (turtleneck->should_feed()) feed = REFILL_SPEED;
 		break;
 	    case EMPTYING:
-		if (! turtleneck->has_filament()) {
-		    state = EMPTY;
-		    TRACE_STATE("empty");
-		} else {
-		    if (turtleneck->should_feed()) feed = REFILL_SPEED;
-		}
+		if (! turtleneck->has_filament()) state = EMPTY;
+		else if (turtleneck->should_feed()) feed = REFILL_SPEED;
 		break;
 	    case MANUAL:
 		break;
 	    }
+
+	    trace_state(old_state);
 
 	    if (feed) {
 		stepper->step(feed);
@@ -307,24 +282,14 @@ public:
 	if (state == READY) {
 	    can_take_over = true;
 	    state = LOADING;
-	    TRACE_STATE("loading (take over feeding)");
+	    trace_state(READY);
 	}
 
 	return can_take_over;
     }
 
     void dump_state() {
-	printf("%s: ", name);
-	switch (state) {
-	case EMPTY: printf("empty"); break;
-	case PRE_LOADING: printf("pre-loading"); break;
-	case PRE_LOADING_RETRACT: printf("pre-loading(retract)"); break;
-	case READY: printf("ready"); break;
-	case LOADING: printf("loading"); break;
-	case ACTIVE: printf("active"); break;
-	case EMPTYING: printf("emptying"); break;
-	case MANUAL: printf("manual"); break;
-	}
+	printf("%s: %s", name, state_to_string(state));
 	filament->dump_state();
 	printf("\n");
     }
@@ -335,7 +300,25 @@ private:
     Turtleneck *turtleneck;
 
     LaneFilamentState *filament;
-    enum { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
+    enum State { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
+
+    const char *state_to_string(enum State state) {
+	switch (state) {
+	case EMPTY: return "empty";
+	case PRE_LOADING: return "pre-loading";
+	case PRE_LOADING_RETRACT: return "pre-loading(retract)";
+	case READY: return "ready";
+	case LOADING: return "loading";
+	case ACTIVE: return "active";
+	case EMPTYING: return "emptying";
+	case MANUAL: return "manual";
+	}
+	return "** INVALID STATE**";
+    }
+
+    inline void trace_state(enum State old_state) {
+	if (state != old_state) printf("%s: %s => %s\n", name, state_to_string(old_state), state_to_string(state));
+    }
 };
 
 // ---------------------------- MAIN -----------------------------
