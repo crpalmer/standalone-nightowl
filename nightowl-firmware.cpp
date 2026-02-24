@@ -59,6 +59,8 @@ public:
 	empty = empty_switch->get();
 	y_output = y_output_switch->get();
 
+	enum State old_state = state;
+
 	switch (state) {
 	case NO_FILAMENT:
 	    if (y_output) state = FEEDING;
@@ -72,6 +74,8 @@ public:
 	    else if (empty) state = FEEDING;
 	    break;
 	}
+
+	trace_state(old_state);
     }
 
     bool has_filament() {
@@ -83,7 +87,7 @@ public:
     }
 
     void dump_state() {
-	printf("turtleneck: %s [", state_to_string());
+	printf("turtleneck: %s [", state_to_string(state));
 	if (full) printf(" full");
 	if (empty) printf(" empty");
 	printf(" ], y-output: %s\n", y_output ? "filament-in-y" : "no-filament-in-y");
@@ -98,15 +102,19 @@ private:
     bool empty = false;
     bool y_output = false;
 
-    enum { NO_FILAMENT, FEEDING, WAITING } state = NO_FILAMENT;
+    enum State { NO_FILAMENT, FEEDING, WAITING } state = NO_FILAMENT;
 
-    const char *state_to_string() {
+    const char *state_to_string(enum State state) {
 	switch(state) {
 	case NO_FILAMENT: return "no-filament";
 	case FEEDING: return "feeding";
 	case WAITING: return "waiting";
 	}
 	return "** INVALID STATE **";
+    }
+
+    inline void trace_state(enum State old_state) {
+	if (old_state != state) printf("turtleneck: %s => %s\n", state_to_string(old_state), state_to_string(state));
     }
 };
 	
