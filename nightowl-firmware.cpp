@@ -44,6 +44,51 @@ static us_time_t us_delay_for(int mm_sec) {
     return 1000000/steps_per_sec;
 }
 
+class Stepper {
+public:
+    Stepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
+	en->set(! enabled);
+    }
+
+    void disable() {
+	if (enabled) {
+	    en->set(true);
+	    enabled = false;
+	}
+    }
+
+    void step(int feed) {
+	if (! feed) return;
+
+	enable();
+	dir->set(feed > 0);
+	step_pin->set(true);
+	us_sleep(STEP_PULSE_US);
+	step_pin->set(false);
+
+	us_time_t delay_us = us_delay_for(fabs(feed));
+	if (delay_us > STEP_PULSE_US) us_sleep(delay_us - STEP_PULSE_US);
+    }
+
+private:
+    Output *en;
+    Output *dir;
+    Output *step_pin;
+
+    bool enabled = false;
+
+    static const int STEP_PULSE_US = 5;
+
+private:
+    void enable() {
+	if (! enabled) {
+	    en->set(false);
+	    enabled = true;
+	}
+    }
+
+};
+
 class Turtleneck : public ThreadInterruptNotifier {
 public:
     Turtleneck(Input *full_switch, Input *empty_switch, Input *y_output_switch) : ThreadInterruptNotifier("turtleneck"), full_switch(full_switch), empty_switch(empty_switch), y_output_switch(y_output_switch) {
@@ -118,53 +163,6 @@ private:
     }
 };
 	
-// ---------------------------- Stepper ---------------------------
-
-class Stepper {
-public:
-    Stepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
-	en->set(! enabled);
-    }
-
-    void disable() {
-	if (enabled) {
-	    en->set(true);
-	    enabled = false;
-	}
-    }
-
-    void step(int feed) {
-	if (! feed) return;
-
-	enable();
-	dir->set(feed > 0);
-	step_pin->set(true);
-	us_sleep(STEP_PULSE_US);
-	step_pin->set(false);
-
-	us_time_t delay_us = us_delay_for(fabs(feed));
-	if (delay_us > STEP_PULSE_US) us_sleep(delay_us - STEP_PULSE_US);
-    }
-
-private:
-    Output *en;
-    Output *dir;
-    Output *step_pin;
-
-    bool enabled = false;
-
-    static const int STEP_PULSE_US = 5;
-
-private:
-    void enable() {
-	if (! enabled) {
-	    en->set(false);
-	    enabled = true;
-	}
-    }
-
-};
-
 class LaneFilamentState : public ThreadInterruptNotifier {
 public:
     LaneFilamentState(Input *present, Input *loaded, const char *name) : ThreadInterruptNotifier(name), present(present), loaded(loaded) {
