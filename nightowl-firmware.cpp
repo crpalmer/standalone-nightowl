@@ -28,6 +28,12 @@
 #define M1_DIR_INVERT  1
 #define M2_DIR_INVERT  0
 
+// Thread priorities
+
+#define STATE_PRIORITY	    3
+#define LANE_PRIORITY	    2
+#define TURTLENECK_PRIORITY STATE_PRIORITY
+
 // Configuration Values
 
 #define STEPS_PER_MM	415
@@ -91,7 +97,7 @@ private:
 
 class Turtleneck : public ThreadInterruptNotifier {
 public:
-    Turtleneck(Input *full_switch, Input *empty_switch, Input *y_output_switch) : ThreadInterruptNotifier("turtleneck"), full_switch(full_switch), empty_switch(empty_switch), y_output_switch(y_output_switch) {
+    Turtleneck(Input *full_switch, Input *empty_switch, Input *y_output_switch) : ThreadInterruptNotifier("turtleneck", TURTLENECK_PRIORITY), full_switch(full_switch), empty_switch(empty_switch), y_output_switch(y_output_switch) {
 	on_change_safe();
 
 	full_switch->set_notifier(this);
@@ -165,7 +171,7 @@ private:
 	
 class LaneFilamentState : public ThreadInterruptNotifier {
 public:
-    LaneFilamentState(Input *present, Input *loaded, const char *name) : ThreadInterruptNotifier(name), present(present), loaded(loaded) {
+    LaneFilamentState(Input *present, Input *loaded, const char *name) : ThreadInterruptNotifier(name, STATE_PRIORITY), present(present), loaded(loaded) {
 	lock = new PiMutex();
 	present_value = present->get();
 	loaded_value = loaded->get();
@@ -217,7 +223,7 @@ public:
     Lane(Input *present, Input *loaded, Stepper *stepper, Turtleneck *turtleneck, const char *name) : PiThread(name), name(name), stepper(stepper), turtleneck(turtleneck) {
 	char *state_name = maprintf("state-%s", name);
 	filament = new LaneFilamentState(present, loaded, state_name);
-	start();
+	start(LANE_PRIORITY);
     }
 
     void main() override {
