@@ -7,6 +7,7 @@
 #include "string-utils.h"
 #include "thread-interrupt-notifier.h"
 #include "time-utils.h"
+#include "tmc2209.h"
 
 // Switch pins (active low, pull-up)
 #define PIN_L1_IN      18
@@ -21,9 +22,12 @@
 #define PIN_M1_EN      14
 #define PIN_M1_DIR     15
 #define PIN_M1_STEP    16
+#define PIN_M1_UART    17
+
 #define PIN_M2_EN       8
 #define PIN_M2_DIR      9
 #define PIN_M2_STEP    10
+#define PIN_M2_UART    11
 
 #define M1_DIR_INVERT  1
 #define M2_DIR_INVERT  0
@@ -52,8 +56,9 @@ static us_time_t us_delay_for(int mm_sec) {
 
 class Stepper {
 public:
-    Stepper(Output *en, Output *dir, Output *step_pin) : en(en), dir(dir), step_pin(step_pin) {
+    Stepper(TMC2209 *tmc, Output *en, Output *dir, Output *step_pin) : tmc(tmc), en(en), dir(dir), step_pin(step_pin) {
 	en->set(! enabled);
+	tmc->set_microstepping(128);
     }
 
     void disable() {
@@ -77,6 +82,7 @@ public:
     }
 
 private:
+    TMC2209 *tmc;
     Output *en;
     Output *dir;
     Output *step_pin;
@@ -355,7 +361,9 @@ static Lane *create_lane_1(Turtleneck *turtleneck) {
     Output *L1_dir = new GPOutput(PIN_M1_DIR);
     Output *L1_step = new GPOutput(PIN_M1_STEP);
     L1_dir->set_is_inverted(M1_DIR_INVERT);
-    Stepper *L1_stepper = new Stepper(L1_enable, L1_dir, L1_step);
+    UART_Tx *tx = new UART_Tx(PIN_M1_UART);
+    TMC2209 *tmc = new TMC2209(tx, 3);
+    Stepper *L1_stepper = new Stepper(tmc, L1_enable, L1_dir, L1_step);
 
     Input *L1_present = new_gpinput(PIN_L1_IN);
     Input *L1_loaded = new_gpinput(PIN_L1_OUT);
@@ -367,7 +375,9 @@ static Lane *create_lane_2(Turtleneck *turtleneck) {
     Output *L2_dir = new GPOutput(PIN_M2_DIR);
     Output *L2_step = new GPOutput(PIN_M2_STEP);
     L2_dir->set_is_inverted(M2_DIR_INVERT);
-    Stepper *L2_stepper = new Stepper(L2_enable, L2_dir, L2_step);
+    UART_Tx *tx = new UART_Tx(PIN_M2_UART);
+    TMC2209 *tmc = new TMC2209(tx, 3);
+    Stepper *L2_stepper = new Stepper(tmc, L2_enable, L2_dir, L2_step);
 
     Input *L2_present = new_gpinput(PIN_L2_IN);
     Input *L2_loaded = new_gpinput(PIN_L2_OUT);
