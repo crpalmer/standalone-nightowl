@@ -11,8 +11,8 @@
 #include "tmc2209.h"
 
 // Switch pins (active low, pull-up)
-#define PIN_L1_IN      18
-#define PIN_L1_OUT     12
+#define PIN_L1_IN      12
+#define PIN_L1_OUT     18
 #define PIN_L2_IN       2
 #define PIN_L2_OUT      3
 #define PIN_TURTLENECK_FULL  25
@@ -35,10 +35,7 @@
 
 // Thread priorities
 
-#define STEPPER_PRIORITY    5
-#define STATE_PRIORITY	    4
-#define TURTLENECK_PRIORITY STATE_PRIORITY
-#define LANE_PRIORITY	    3
+#define STEPPER_PRIORITY    3
 #define COORDINATOR_PRIORITY 2
 
 // Configuration Values
@@ -52,172 +49,117 @@
 
 #define TRACE_STATE(x) printf("%s => %s\n", name, x)
 
-class Turtleneck : public ThreadInterruptNotifier {
+class Switch {
 public:
-    Turtleneck(Input *full_switch, Input *empty_switch, Input *y_output_switch) : ThreadInterruptNotifier("turtleneck", TURTLENECK_PRIORITY), full_switch(full_switch), empty_switch(empty_switch), y_output_switch(y_output_switch) {
-	on_change_safe();
-
-	full_switch->set_notifier(this);
-	empty_switch->set_notifier(this);
-	y_output_switch->set_notifier(this);
+    Switch(int pin, ThreadInterruptNotifier *notifier) {
+	input = new GPInput(pin);
+	input->set_pullup_up();
+	input->set_debounce_us(50);
+	input->set_is_inverted();
+	input->set_notifier(notifier);
+	update();
     }
 
-    void set_active(ThreadInterruptNotifier *active) {
-	this->active = active;
+    bool update() {
+	bool new_value = input->get();
+	bool updated = new_value != value;
+	value = new_value;
+	return updated;
     }
 
-    void on_change_safe() override {
-	full = full_switch->get();
-	empty = empty_switch->get();
-	y_output = y_output_switch->get();
-
-	enum State old_state = state;
-
-	switch (state) {
-	case NO_FILAMENT:
-	    if (y_output) state = FEEDING;
-	    break;
-	case FEEDING:
-	    if (! y_output) state = NO_FILAMENT;
-	    else if (full) state = WAITING;
-	    break;
-	case WAITING:
-	    if (! y_output) state = NO_FILAMENT;
-	    else if (empty) state = FEEDING;
-	    break;
-	}
-
-	trace_state(old_state);
-	if (active) active->on_change_safe();
-    }
-
-    bool has_filament() {
-	return state != NO_FILAMENT;
-    }
-
-    bool should_feed() {
-	return state == FEEDING;
-    }
-
-    void dump_state() {
-	printf("turtleneck: %s [", state_to_string(state));
-	if (full) printf(" full");
-	if (empty) printf(" empty");
-	printf(" ], y-output: %s\n", y_output ? "filament-in-y" : "no-filament-in-y");
+    bool get() {
+	return value;
     }
 
 private:
-    Input *full_switch;
-    Input *empty_switch;
-    Input *y_output_switch;
-
-    bool full = false;
-    bool empty = false;
-    bool y_output = false;
-
-    class ThreadInterruptNotifier *active = NULL;
-    enum State { NO_FILAMENT, FEEDING, WAITING } state = NO_FILAMENT;
-
-    const char *state_to_string(enum State state) {
-	switch(state) {
-	case NO_FILAMENT: return "no-filament";
-	case FEEDING: return "feeding";
-	case WAITING: return "waiting";
-	}
-	return "** INVALID STATE **";
-    }
-
-    inline void trace_state(enum State old_state) {
-	if (old_state != state) printf("turtleneck: %s => %s\n", state_to_string(old_state), state_to_string(state));
-    }
+    Input *input;
+    bool value;
 };
-	
-class Lane : public ThreadInterruptNotifier {
-public:
-    Lane(Input *present, Input *loaded, Stepper *stepper, Turtleneck *turtleneck, const char *name) : ThreadInterruptNotifier(name, LANE_PRIORITY), name(name), present(present), loaded(loaded), stepper(stepper), turtleneck(turtleneck) {
-	lock = new PiMutex();
 
-	if (present->get() && loaded->get()) state = LOADING;
-	else if (! present->get() && loaded->get()) state = EMPTYING;
+class LaneSwitches {
+public:
+    LaneSwitches(int present_pin, int loaded_pin, ThreadInterruptNotifier *notifier) {
+	present_switch = new Switch(present_pin, notifier);
+	loaded_switch = new Switch(loaded_pin, notifier);
+	update();
+    }
+
+    bool update() {
+	bool p = present_switch->update();
+	bool l = loaded_switch->update();
+	return p || l;
+    }
+
+    bool is_present() { return present_switch->get(); }
+    bool is_loaded() { return loaded_switch->get(); }
+
+    void dump_state() {
+	if (is_present()) printf(" is-present");
+	if (is_loaded()) printf(" is-loaded");
+    }
+
+private:
+    Switch *present_switch;
+    Switch *loaded_switch;
+};
+
+class OutputSwitches {
+public:
+    OutputSwitches(ThreadInterruptNotifier *notifier) {
+	y_output_switch = new Switch(PIN_Y_OUTPUT, notifier);
+	buffer_full_switch = new Switch(PIN_TURTLENECK_FULL, notifier);
+	buffer_empty_switch = new Switch(PIN_TURTLENECK_EMPTY, notifier);
+	update();
+    }
+
+    bool update() {
+	bool o = y_output_switch->update();
+	bool f = buffer_full_switch->update();
+	bool e = buffer_empty_switch->update();
+	return o || f || e;
+    }
+
+    bool has_y_output() { return y_output_switch->get(); }
+    bool buffer_is_full() { return buffer_full_switch->get(); }
+    bool buffer_is_empty() { return buffer_empty_switch->get(); }
+
+    void dump_state() {
+	if (has_y_output()) printf(" has-y-output");
+	if (buffer_is_full()) printf(" buffer-full");
+	if (buffer_is_empty()) printf(" buffer-empty");
+    }
+
+private:
+    Switch *y_output_switch;
+    Switch *buffer_full_switch;
+    Switch *buffer_empty_switch;
+};
+
+class LaneStateNotifier {
+public:
+    virtual void lane_is_inactive(class Lane *) = 0;
+    virtual void lane_is_ready(class Lane *) = 0;
+};
+
+class Lane {
+public:
+    Lane(LaneSwitches *lane_switches, OutputSwitches *output_switches, Stepper *stepper, const char *name) : name(name), lane_switches(lane_switches), output_switches(output_switches), stepper(stepper) {
+	bool is_present = lane_switches->is_present();
+	bool is_loaded = lane_switches->is_loaded();
+
+	if (is_present && ! is_loaded) state = LOADING;
+	else if (! is_present && is_loaded) state = EMPTYING;
 	else state = EMPTY;
 
         printf("Initial state: %s\n", state_to_string(state));
-
-	present->set_notifier(this);
-	loaded->set_notifier(this);
     }
 
-    void on_change_safe() override {
-        lock->lock();
-	handle_state_change_locked();
-	lock->unlock();
-    }
-
-    bool is_active() {
-	lock->lock();
-	bool ret = (state == LOADING || state == ACTIVE || state == EMPTYING);
-	lock->unlock();
-
-	return ret;
-    }
-	
-    bool take_over_feeding() {
-	bool can_take_over = false;
-
-	lock->lock();
-	if (state == READY) {
-	    can_take_over = true;
-	    state = LOADING;
-	    printf("%s: taking over feeding\n", name);
-	    turtleneck->set_active(this);
-	    handle_state_change_locked();
-	}
-	lock->unlock();
-
-	return can_take_over;
-    }
-
-    void dump_state() {
-	lock->lock();
-	printf("%s: %s %s\n", name, state_to_string(state), is_loaded ? "loaded" : (is_present ? "preset" : ""));
-	lock->unlock();
-    }
-
-private:
-    const char *name;
-    Input *present;
-    Input *loaded;
-    Stepper *stepper;
-    Turtleneck *turtleneck;
-
-    enum State { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, EMPTYING, MANUAL } state = EMPTY;
-
-    PiMutex *lock;
-    bool is_present = false;
-    bool is_loaded = false;
-
-private:
-    const char *state_to_string(enum State state) {
-	switch (state) {
-	case EMPTY: return "empty";
-	case PRE_LOADING: return "pre-loading";
-	case PRE_LOADING_RETRACT: return "pre-loading(retract)";
-	case READY: return "ready";
-	case LOADING: return "loading";
-	case ACTIVE: return "active";
-	case EMPTYING: return "emptying";
-	case MANUAL: return "manual";
-	}
-	return "** INVALID STATE**";
-    }
-
-    inline void trace_state(enum State old_state) {
-	if (state != old_state) printf("%s: %s => %s\n", name, state_to_string(old_state), state_to_string(state));
-    }
-
-    void handle_state_change_locked() {
-	is_present = present->get();
-        is_loaded = loaded->get();
+    void update() {
+	bool is_present = lane_switches->is_present();
+        bool is_loaded = lane_switches->is_loaded();
+	bool buffer_is_full = output_switches->buffer_is_full();
+	bool buffer_is_empty = output_switches->buffer_is_empty();
+	bool has_y_output = output_switches->has_y_output();
 
 	int feed;
 	enum State old_state;
@@ -237,23 +179,35 @@ private:
 		else feed = PRELOAD_SPEED;
 		break;
 	    case PRE_LOADING_RETRACT:
-		if (! is_loaded) state = READY;
+		if (! is_present) state = EMPTY;
+		else if (! is_loaded) state = READY;
 		else feed = -PRELOAD_SPEED;
 		break;
 	    case READY:
 		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
-		if (turtleneck->has_filament()) state = ACTIVE;
+		if (has_y_output) state = ACTIVE;
+		// TODO: else if (buffer_is_empty) really short filament in here somewhere??
 		else feed = LOADING_SPEED;
 		break;
 	    case ACTIVE:
 		if (! is_present) state = EMPTYING;
-		else if (turtleneck->should_feed()) feed = REFILL_SPEED;
+		else if (buffer_is_full) state = WAITING;
+		else feed = REFILL_SPEED;
+		break;
+	    case WAITING:
+		if (! is_present) state = EMPTYING;
+		else if (buffer_is_empty) state = ACTIVE;
 		break;
 	    case EMPTYING:
-		if (! turtleneck->has_filament()) state = EMPTY;
-		else if (turtleneck->should_feed()) feed = REFILL_SPEED;
+		if (! has_y_output) state = EMPTY;
+		else if (buffer_is_full) state = EMPTYING_WAITING;
+		else feed = REFILL_SPEED;
+		break;
+	    case EMPTYING_WAITING:
+		if (! has_y_output) state = EMPTY;
+		else if (buffer_is_empty) state = EMPTYING;
 		break;
 	    case MANUAL:
 		break;
@@ -263,88 +217,135 @@ private:
         } while (state != old_state);
 
 	stepper->set_speed(feed);
-	lock->unlock();
+    }
+
+public:
+    bool is_active() {
+	return state > READY;
+    }
+
+    bool is_ready() {
+	return state == READY;
+    }
+
+    void activate() {
+	assert (state == READY);
+	state = ACTIVE;
+	update();
+    }
+
+    void dump_state() {
+	printf("%s: %s", name, state_to_string(state));
+	lane_switches->dump_state();
+	if (is_active()) output_switches->dump_state();
+	printf("\n");
+    }
+
+private:
+    const char *name;
+    LaneSwitches *lane_switches;
+    OutputSwitches *output_switches;
+    Stepper *stepper;
+
+    enum State { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, WAITING, EMPTYING, EMPTYING_WAITING, MANUAL } state = EMPTY;
+
+private:
+    const char *state_to_string(enum State state) {
+	switch (state) {
+	case EMPTY: return "empty";
+	case PRE_LOADING: return "pre-loading";
+	case PRE_LOADING_RETRACT: return "pre-loading(retract)";
+	case READY: return "ready";
+	case LOADING: return "loading";
+	case ACTIVE: return "active";
+	case WAITING: return "waiting";
+	case EMPTYING: return "emptying";
+	case EMPTYING_WAITING: return "emptying-waiting";
+	case MANUAL: return "manual";
+	}
+	return "** INVALID STATE**";
+    }
+
+    inline void trace_state(enum State old_state) {
+	if (state != old_state) printf("%s: %s => %s\n", name, state_to_string(old_state), state_to_string(state));
     }
 };
 
 // ---------------------------- MAIN -----------------------------
 
-static GPInput *new_gpinput(int pin) {
-    GPInput *input = new GPInput(pin);
-    input->set_pullup_up();
-    input->set_debounce(1);
-    input->set_is_inverted();
-    return input;
-}
-
-static Turtleneck *create_turtleneck() {
-    Input *full = new_gpinput(PIN_TURTLENECK_FULL);
-    Input *empty = new_gpinput(PIN_TURTLENECK_EMPTY);
-    Input *y_output = new_gpinput(PIN_Y_OUTPUT);
-    return new Turtleneck(full, empty, y_output);
-}
-
-static Lane *create_lane_1(Turtleneck *turtleneck) {
-    Output *L1_enable = new GPOutput(PIN_M1_EN);
-    Output *L1_dir = new GPOutput(PIN_M1_DIR);
-    Output *L1_step = new GPOutput(PIN_M1_STEP);
-    L1_dir->set_is_inverted(M1_DIR_INVERT);
+static Stepper *create_lane_1_stepper() {
+    Output *enable = new GPOutput(PIN_M1_EN);
+    Output *dir = new GPOutput(PIN_M1_DIR);
+    Output *step = new GPOutput(PIN_M1_STEP);
+    dir->set_is_inverted(M1_DIR_INVERT);
     //UART_Tx *tx = new UART_Tx(PIN_M1_UART, 115200);
     //TMC2209 *tmc = new TMC2209(tx, 3);
-    Stepper *L1_stepper = new Stepper(L1_enable, L1_dir, L1_step, "stepper-1", STEPPER_PRIORITY);
-    L1_stepper->set_steps_per_mm(STEPS_PER_MM);
-
-    Input *L1_present = new_gpinput(PIN_L1_IN);
-    Input *L1_loaded = new_gpinput(PIN_L1_OUT);
-    return new Lane(L1_present, L1_loaded, L1_stepper, turtleneck, "lane-1");
+    Stepper *stepper = new Stepper(enable, dir, step, "stepper-1", STEPPER_PRIORITY);
+    stepper->set_steps_per_mm(STEPS_PER_MM);
+    return stepper;
 }
 
-static Lane *create_lane_2(Turtleneck *turtleneck) {
-    Output *L2_enable = new GPOutput(PIN_M2_EN);
-    Output *L2_dir = new GPOutput(PIN_M2_DIR);
-    Output *L2_step = new GPOutput(PIN_M2_STEP);
-    L2_dir->set_is_inverted(M2_DIR_INVERT);
+static Stepper *create_lane_2_stepper() {
+    Output *enable = new GPOutput(PIN_M2_EN);
+    Output *dir = new GPOutput(PIN_M2_DIR);
+    Output *step = new GPOutput(PIN_M2_STEP);
+    dir->set_is_inverted(M2_DIR_INVERT);
     //UART_Tx *tx = new UART_Tx(PIN_M2_UART, 115200);
     //TMC2209 *tmc = new TMC2209(tx, 3);
-    Stepper *L2_stepper = new Stepper(L2_enable, L2_dir, L2_step, "stepper-2", STEPPER_PRIORITY);
-    L2_stepper->set_steps_per_mm(STEPS_PER_MM);
-
-    Input *L2_present = new_gpinput(PIN_L2_IN);
-    Input *L2_loaded = new_gpinput(PIN_L2_OUT);
-    return new Lane(L2_present, L2_loaded, L2_stepper, turtleneck, "lane-2");
+    Stepper *stepper = new Stepper(enable, dir, step, "stepper-2", STEPPER_PRIORITY);
+    stepper->set_steps_per_mm(STEPS_PER_MM);
+    return stepper;
 }
 
-class Coordinator : public PiThread {
+class Coordinator : ThreadInterruptNotifier {
 public:
-    Coordinator() : PiThread("coordinator") {
-	turtleneck = create_turtleneck();
-	lane_1 = create_lane_1(turtleneck);
-	lane_2 = create_lane_2(turtleneck);
+    Coordinator() : ThreadInterruptNotifier("coordinator", COORDINATOR_PRIORITY) {
+	output_switches = new OutputSwitches(this);
+	lane_1_switches = new LaneSwitches(PIN_L1_IN, PIN_L1_OUT, this);
+	lane_2_switches = new LaneSwitches(PIN_L2_IN, PIN_L2_OUT, this);
+	lane_1 = new Lane(lane_1_switches, output_switches, create_lane_1_stepper(), "lane-1");
+	lane_2 = new Lane(lane_2_switches, output_switches, create_lane_2_stepper(), "lane-2");
 
-	start(COORDINATOR_PRIORITY);
+	update(true);
     }
 
-    void main() override {
-	while (true) {
-	    if (! lane_1->is_active() && ! lane_2->is_active()) {
-		if (! lane_1->take_over_feeding()) {
-		    lane_2->take_over_feeding();
-		}
-	    }
-	    ms_sleep(100);
-	}
+    void on_change_safe() override {
+	update();
     }
 
+    void update(bool force = true) {
+	bool output_changed = output_switches->update();
+	bool l1_changed = lane_1_switches->update();
+	bool l2_changed = lane_2_switches->update();
+
+	if (force || l1_changed || (active_lane == lane_1 && output_changed)) lane_1->update();
+	if (force || l2_changed || (active_lane == lane_2 && output_changed)) lane_2->update();
+
+	if (active_lane && ! active_lane->is_active()) active_lane = NULL;
+	if (! active_lane) activate();
+    }
+	
     void dump_state() {
-	turtleneck->dump_state();
 	lane_1->dump_state();
 	lane_2->dump_state();
     }
 
 private:
-	Turtleneck *turtleneck;
-	Lane *lane_1;
-	Lane *lane_2;
+    void activate() {
+	if (active_lane) return;
+	if (lane_1->is_ready()) active_lane = lane_1;
+	else if (lane_2->is_ready()) active_lane = lane_2;
+	if (active_lane) active_lane->activate();
+    }
+
+private:
+    OutputSwitches *output_switches;
+    LaneSwitches *lane_1_switches;
+    LaneSwitches *lane_2_switches;
+    Lane *lane_1;
+    Lane *lane_2;
+
+    Lane *active_lane = NULL;
 };
 
 static void threads_main(int argc, char **argv) {
