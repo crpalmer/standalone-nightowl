@@ -10,6 +10,10 @@
 #include "time-utils.h"
 #include "tmc2209.h"
 
+#define BOARD_ERB 0
+#define BOARD_SKR_PICO 1
+
+#if BOARD_ERB
 // Switch pins (active low, pull-up)
 #define PIN_L1_IN      12
 #define PIN_L1_OUT     18
@@ -32,6 +36,34 @@
 
 #define M1_DIR_INVERT  1
 #define M2_DIR_INVERT  0
+#endif
+
+#if BOARD_SKR_PICO
+// Switch pins (active low, pull-up)
+#define PIN_L1_IN      26
+#define PIN_L1_OUT     27
+#define PIN_L2_IN       4
+#define PIN_L2_OUT      3
+#define PIN_TURTLENECK_FULL  16
+#define PIN_TURTLENECK_EMPTY 22
+#define PIN_Y_OUTPUT    25
+
+// Steppers
+// M1 is on E0
+#define PIN_M1_EN      15
+#define PIN_M1_DIR     13
+#define PIN_M1_STEP    14
+//#define PIN_M1_UART    17
+
+// M2 ia on X
+#define PIN_M2_EN      12
+#define PIN_M2_DIR     10
+#define PIN_M2_STEP    11
+//#define PIN_M2_UART    17
+
+#define M1_DIR_INVERT  1
+#define M2_DIR_INVERT  0
+#endif
 
 // Thread priorities
 
