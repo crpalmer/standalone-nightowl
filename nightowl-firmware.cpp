@@ -83,7 +83,7 @@
 
 class Switch {
 public:
-    Switch(int pin, ThreadInterruptNotifier *notifier) {
+    Switch(int pin, ThreadInterruptNotifier *notifier) : pin(pin) {
 	input = new GPInput(pin);
 	input->set_pullup_up();
 	input->set_debounce_us(50);
@@ -104,6 +104,7 @@ public:
     }
 
 private:
+    int pin;
     Input *input;
     bool value;
 };
@@ -179,7 +180,7 @@ public:
 	bool is_present = lane_switches->is_present();
 	bool is_loaded = lane_switches->is_loaded();
 
-	if (is_present && ! is_loaded) state = LOADING;
+	if (is_present && ! is_loaded) state = PRE_LOADING;
 	else if (! is_present && is_loaded) state = EMPTYING;
 	else state = EMPTY;
 
@@ -217,9 +218,14 @@ public:
 		break;
 	    case READY:
 		break;
+	    case ACTIVATING:
+		if (is_loaded) state = LOADING;
+		else if (! is_present) state = EMPTY;
+		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
-		if (has_y_output) state = ACTIVE;
+		if (! is_loaded && ! has_y_output) state = EMPTY;
+		else if (has_y_output) state = ACTIVE;
 		// TODO: else if (buffer_is_empty) really short filament in here somewhere??
 		else feed = LOADING_SPEED;
 		break;
@@ -262,7 +268,7 @@ public:
 
     void activate() {
 	assert (state == READY);
-	state = ACTIVE;
+	state = ACTIVATING;
 	update();
     }
 
@@ -279,7 +285,7 @@ private:
     OutputSwitches *output_switches;
     Stepper *stepper;
 
-    enum State { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, LOADING, ACTIVE, WAITING, EMPTYING, EMPTYING_WAITING, MANUAL } state = EMPTY;
+    enum State { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, ACTIVATING, LOADING, ACTIVE, WAITING, EMPTYING, EMPTYING_WAITING, MANUAL } state = EMPTY;
 
 private:
     const char *state_to_string(enum State state) {
@@ -288,6 +294,7 @@ private:
 	case PRE_LOADING: return "pre-loading";
 	case PRE_LOADING_RETRACT: return "pre-loading(retract)";
 	case READY: return "ready";
+	case ACTIVATING: return "activating";
 	case LOADING: return "loading";
 	case ACTIVE: return "active";
 	case WAITING: return "waiting";
@@ -358,7 +365,9 @@ public:
     }
 	
     void dump_state() {
+	if (active_lane) printf("%s: ", lane_1 == active_lane ? "ACTIVE" : "      ");
 	lane_1->dump_state();
+	if (active_lane) printf("%s: ", lane_2 == active_lane ? "ACTIVE" : "      ");
 	lane_2->dump_state();
     }
 
@@ -367,7 +376,11 @@ private:
 	if (active_lane) return;
 	if (lane_1->is_ready()) active_lane = lane_1;
 	else if (lane_2->is_ready()) active_lane = lane_2;
-	if (active_lane) active_lane->activate();
+	if (active_lane) {
+	    active_lane->activate();
+	    printf("activated: ");
+	    active_lane->dump_state();
+        }
     }
 
 private:
