@@ -10,35 +10,6 @@
 #include "time-utils.h"
 #include "tmc2209.h"
 
-#define BOARD_ERB 0
-#define BOARD_SKR_PICO 1
-
-#if BOARD_ERB
-// Switch pins (active low, pull-up)
-#define PIN_L1_IN      12
-#define PIN_L1_OUT     18
-#define PIN_L2_IN       2
-#define PIN_L2_OUT      3
-#define PIN_TURTLENECK_FULL  25
-#define PIN_TURTLENECK_EMPTY 24
-#define PIN_Y_OUTPUT    4
-
-// Steppers
-#define PIN_M1_EN      14
-#define PIN_M1_DIR     15
-#define PIN_M1_STEP    16
-#define PIN_M1_UART    17
-
-#define PIN_M2_EN       8
-#define PIN_M2_DIR      9
-#define PIN_M2_STEP    10
-#define PIN_M2_UART    11
-
-#define M1_DIR_INVERT  1
-#define M2_DIR_INVERT  0
-#endif
-
-#if BOARD_SKR_PICO
 // Switch pins (active low, pull-up)
 #define PIN_L1_IN      26
 #define PIN_L1_OUT     27
@@ -49,33 +20,40 @@
 #define PIN_Y_OUTPUT    25
 
 // Steppers
+#define TMC_UART_TX	8
+#define TMC_UART_RX	9
 // M1 is on E0
 #define PIN_M1_EN      15
 #define PIN_M1_DIR     13
 #define PIN_M1_STEP    14
-//#define PIN_M1_UART    17
+#define PIN_M1_ADDRESS  3
 
 // M2 ia on X
 #define PIN_M2_EN      12
 #define PIN_M2_DIR     10
 #define PIN_M2_STEP    11
-//#define PIN_M2_UART    17
+#define PIN_M2_ADDRESS  0
 
-#define M1_DIR_INVERT  1
+#define M1_DIR_INVERT  0
 #define M2_DIR_INVERT  0
-#endif
 
 // Thread priorities
 
+#if 0
 #define STEPPER_PRIORITY    3
 #define COORDINATOR_PRIORITY 2
+#else
+#define STEPPER_PRIORITY    1
+#define COORDINATOR_PRIORITY 1
+#endif
 
 // Configuration Values
 
-#define STEPS_PER_MM	415
-#define PRELOAD_SPEED	2		// mm/sec
-#define LOADING_SPEED	20
-#define REFILL_SPEED	20
+static const int microstepping = 16;
+#define STEPS_PER_MM	(680*microstepping/16)
+#define PRELOAD_SPEED	5		// mm/sec
+#define LOADING_SPEED	10
+#define REFILL_SPEED	10
 
 // -------------------------- END CONFIG --------------------------
 
@@ -180,11 +158,11 @@ public:
 	bool is_present = lane_switches->is_present();
 	bool is_loaded = lane_switches->is_loaded();
 
-	if (is_present && ! is_loaded) state = PRE_LOADING;
-	else if (! is_present && is_loaded) state = EMPTYING;
-	else state = EMPTY;
+	state = EMPTY;
+	if (is_present && is_loaded) state = ACTIVE;
+	if (! is_present && is_loaded) state = EMPTYING;
 
-        printf("Initial state: %s\n", state_to_string(state));
+        printf("%s: initial state: %s\n", name, state_to_string(state));
     }
 
     void update() {
@@ -221,6 +199,7 @@ public:
 	    case ACTIVATING:
 		if (is_loaded) state = LOADING;
 		else if (! is_present) state = EMPTY;
+		else feed = LOADING_SPEED;
 		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
@@ -279,6 +258,10 @@ public:
 	printf("\n");
     }
 
+    void error() {
+	stepper->set_speed(0);
+    }
+
 private:
     const char *name;
     LaneSwitches *lane_switches;
@@ -312,25 +295,29 @@ private:
 
 // ---------------------------- MAIN -----------------------------
 
-static Stepper *create_lane_1_stepper() {
+static void configure_tmc(UART_Tx *tx, int address) {
+    TMC2209 *tmc = new TMC2209(tx, address);
+    tmc->set_microstepping(microstepping);
+    tmc->set_rms_current(200);
+}
+
+static Stepper *create_lane_1_stepper(UART_Tx *tx) {
     Output *enable = new GPOutput(PIN_M1_EN);
     Output *dir = new GPOutput(PIN_M1_DIR);
     Output *step = new GPOutput(PIN_M1_STEP);
     dir->set_is_inverted(M1_DIR_INVERT);
-    //UART_Tx *tx = new UART_Tx(PIN_M1_UART, 115200);
-    //TMC2209 *tmc = new TMC2209(tx, 3);
+    configure_tmc(tx, PIN_M1_ADDRESS);
     Stepper *stepper = new Stepper(enable, dir, step, "stepper-1", STEPPER_PRIORITY);
     stepper->set_steps_per_mm(STEPS_PER_MM);
     return stepper;
 }
 
-static Stepper *create_lane_2_stepper() {
+static Stepper *create_lane_2_stepper(UART_Tx *tx) {
     Output *enable = new GPOutput(PIN_M2_EN);
     Output *dir = new GPOutput(PIN_M2_DIR);
     Output *step = new GPOutput(PIN_M2_STEP);
     dir->set_is_inverted(M2_DIR_INVERT);
-    //UART_Tx *tx = new UART_Tx(PIN_M2_UART, 115200);
-    //TMC2209 *tmc = new TMC2209(tx, 3);
+    configure_tmc(tx, PIN_M2_ADDRESS);
     Stepper *stepper = new Stepper(enable, dir, step, "stepper-2", STEPPER_PRIORITY);
     stepper->set_steps_per_mm(STEPS_PER_MM);
     return stepper;
@@ -339,13 +326,25 @@ static Stepper *create_lane_2_stepper() {
 class Coordinator : ThreadInterruptNotifier {
 public:
     Coordinator() : ThreadInterruptNotifier("coordinator", COORDINATOR_PRIORITY) {
+	tx = new UART_Tx(TMC_UART_TX, 115200);
 	output_switches = new OutputSwitches(this);
 	lane_1_switches = new LaneSwitches(PIN_L1_IN, PIN_L1_OUT, this);
 	lane_2_switches = new LaneSwitches(PIN_L2_IN, PIN_L2_OUT, this);
-	lane_1 = new Lane(lane_1_switches, output_switches, create_lane_1_stepper(), "lane-1");
-	lane_2 = new Lane(lane_2_switches, output_switches, create_lane_2_stepper(), "lane-2");
+	lane_1 = new Lane(lane_1_switches, output_switches, create_lane_1_stepper(tx), "lane-1");
+	lane_2 = new Lane(lane_2_switches, output_switches, create_lane_2_stepper(tx), "lane-2");
 
 	update(true);
+
+	// TODO: What to do here!?!?!
+	while (lane_1->is_active() && lane_2->is_active()) {
+	    lane_1->error();
+	    lane_2->error();
+	    printf("\n\nFATAL ERROR: both lanes think they are active!!\n");
+	    ms_sleep(1000);
+	}
+
+	if (lane_1->is_active()) active_lane = lane_1;
+	if (lane_2->is_active()) active_lane = lane_2;
     }
 
     void on_change_safe() override {
@@ -361,29 +360,40 @@ public:
 	if (force || l2_changed || (active_lane == lane_2 && output_changed)) lane_2->update();
 
 	if (active_lane && ! active_lane->is_active()) active_lane = NULL;
-	if (! active_lane) activate();
+
+	if (! active_lane) {
+	    if (lane_1->is_ready()) active_lane = lane_1;
+	    else if (lane_2->is_ready()) active_lane = lane_2;
+	    if (active_lane) {
+		active_lane->activate();
+		printf("activated: ");
+		active_lane->dump_state();
+	    }
+	}
     }
 	
     void dump_state() {
+	printf("======== Current State ===============\n");
 	if (active_lane) printf("%s: ", lane_1 == active_lane ? "ACTIVE" : "      ");
 	lane_1->dump_state();
 	if (active_lane) printf("%s: ", lane_2 == active_lane ? "ACTIVE" : "      ");
 	lane_2->dump_state();
+	printf("all switches: lane_1:");
+	lane_1_switches->dump_state();
+	printf(" || lane_2:");
+	lane_2_switches->dump_state();
+	printf(" || output:");
+	output_switches->dump_state();
+	printf("\n");
     }
 
 private:
     void activate() {
 	if (active_lane) return;
-	if (lane_1->is_ready()) active_lane = lane_1;
-	else if (lane_2->is_ready()) active_lane = lane_2;
-	if (active_lane) {
-	    active_lane->activate();
-	    printf("activated: ");
-	    active_lane->dump_state();
-        }
     }
 
 private:
+    UART_Tx *tx;
     OutputSwitches *output_switches;
     LaneSwitches *lane_1_switches;
     LaneSwitches *lane_2_switches;
