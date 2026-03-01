@@ -51,6 +51,9 @@
 
 static const int microstepping = 16;
 #define STEPS_PER_MM	(680*microstepping/16)
+
+#define ACTIVE_INIT_MM	5000
+
 #define PRELOAD_SPEED	5		// mm/sec
 #define LOADING_SPEED	10
 #define REFILL_SPEED	10
@@ -159,7 +162,7 @@ public:
 	bool is_loaded = lane_switches->is_loaded();
 
 	state = EMPTY;
-	if (is_present && is_loaded) state = ACTIVE;
+	if (is_present && is_loaded) state = EARLY_ACTIVE_INIT;
 	if (! is_present && is_loaded) state = EMPTYING;
 
         printf("%s: initial state: %s\n", name, state_to_string(state));
@@ -204,9 +207,23 @@ public:
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
 		if (! is_loaded && ! has_y_output) state = EMPTY;
-		else if (has_y_output) state = ACTIVE;
+		else if (has_y_output) state = EARLY_ACTIVE_INIT;
 		// TODO: else if (buffer_is_empty) really short filament in here somewhere??
 		else feed = LOADING_SPEED;
+		break;
+	    case EARLY_ACTIVE_INIT:
+		active_init_until = stepper->get_n_steps() + (ACTIVE_INIT_MM * STEPS_PER_MM);
+		state = EARLY_ACTIVE;
+		break;
+	    case EARLY_ACTIVE:
+		if (! is_present) state = EMPTYING;
+		else if (stepper->get_n_steps() >= active_init_until) state = ACTIVE;
+		else if (buffer_is_full) state = EARLY_ACTIVE_WAITING;
+		else feed = REFILL_SPEED;
+		break;
+	    case EARLY_ACTIVE_WAITING:
+		if (! is_present) state = EMPTYING;
+		else if (! buffer_is_full) state = EARLY_ACTIVE;
 		break;
 	    case ACTIVE:
 		if (! is_present) state = EMPTYING;
@@ -268,7 +285,16 @@ private:
     OutputSwitches *output_switches;
     Stepper *stepper;
 
-    enum State { EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY, ACTIVATING, LOADING, ACTIVE, WAITING, EMPTYING, EMPTYING_WAITING, MANUAL } state = EMPTY;
+    int64_t active_init_until = 0;
+
+    enum State {
+	    EMPTY, PRE_LOADING, PRE_LOADING_RETRACT, READY,
+	    ACTIVATING, LOADING,
+	    EARLY_ACTIVE_INIT, EARLY_ACTIVE, EARLY_ACTIVE_WAITING,
+	    ACTIVE, WAITING,
+	    EMPTYING, EMPTYING_WAITING,
+	    MANUAL
+	} state = EMPTY;
 
 private:
     const char *state_to_string(enum State state) {
@@ -279,6 +305,9 @@ private:
 	case READY: return "ready";
 	case ACTIVATING: return "activating";
 	case LOADING: return "loading";
+	case EARLY_ACTIVE_INIT: return "init(early)";
+	case EARLY_ACTIVE: return "active(early)";
+	case EARLY_ACTIVE_WAITING: return "waiting(early)";
 	case ACTIVE: return "active";
 	case WAITING: return "waiting";
 	case EMPTYING: return "emptying";
