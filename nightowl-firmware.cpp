@@ -207,32 +207,26 @@ public:
 		state = EARLY_ACTIVE;
 		break;
 	    case EARLY_ACTIVE:
-		if (! is_present) state = EMPTYING;
+		if (! is_loaded) state = EMPTYING;
 		else if (stepper->get_n_steps() >= active_init_until) state = ACTIVE;
 		else if (buffer_is_full) state = EARLY_ACTIVE_WAITING;
 		else feed = REFILL_SPEED;
 		break;
 	    case EARLY_ACTIVE_WAITING:
-		if (! is_present) state = EMPTYING;
+		if (! is_loaded) state = EMPTYING;
 		else if (! buffer_is_full) state = EARLY_ACTIVE;
 		break;
 	    case ACTIVE:
-		if (! is_present) state = EMPTYING;
+		if (! is_loaded) state = EMPTYING;
 		else if (buffer_is_full) state = WAITING;
 		else feed = REFILL_SPEED;
 		break;
 	    case WAITING:
-		if (! is_present) state = EMPTYING;
+		if (! is_loaded) state = EMPTYING;
 		else if (buffer_is_empty) state = ACTIVE;
 		break;
 	    case EMPTYING:
 		if (! has_y_output) state = EMPTY;
-		else if (buffer_is_full) state = EMPTYING_WAITING;
-		else feed = REFILL_SPEED;
-		break;
-	    case EMPTYING_WAITING:
-		if (! has_y_output) state = EMPTY;
-		else if (buffer_is_empty) state = EMPTYING;
 		break;
 	    case MANUAL:
 		break;
@@ -285,7 +279,7 @@ private:
 	    ACTIVATING, LOADING,
 	    EARLY_ACTIVE_INIT, EARLY_ACTIVE, EARLY_ACTIVE_WAITING,
 	    ACTIVE, WAITING,
-	    EMPTYING, EMPTYING_WAITING,
+	    EMPTYING,
 	    MANUAL
 	} state = EMPTY;
 
@@ -304,7 +298,6 @@ private:
 	case ACTIVE: return "active";
 	case WAITING: return "waiting";
 	case EMPTYING: return "emptying";
-	case EMPTYING_WAITING: return "emptying-waiting";
 	case MANUAL: return "manual";
 	}
 	return "** INVALID STATE**";
