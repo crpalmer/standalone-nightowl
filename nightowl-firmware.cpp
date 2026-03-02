@@ -37,16 +37,6 @@
 #define M1_DIR_INVERT  0
 #define M2_DIR_INVERT  0
 
-// Thread priorities
-
-#if 0
-#define STEPPER_PRIORITY    3
-#define COORDINATOR_PRIORITY 2
-#else
-#define STEPPER_PRIORITY    1
-#define COORDINATOR_PRIORITY 1
-#endif
-
 // Configuration Values
 
 static const int microstepping = 16;
@@ -339,7 +329,7 @@ static Stepper *create_lane_1_stepper(UART_Tx *tx) {
     Output *step = new GPOutput(PIN_M1_STEP);
     dir->set_is_inverted(M1_DIR_INVERT);
     configure_tmc(tx, PIN_M1_ADDRESS);
-    Stepper *stepper = new Stepper(enable, dir, step, "stepper-1", STEPPER_PRIORITY);
+    Stepper *stepper = new Stepper(enable, dir, step, "stepper-1");
     stepper->set_steps_per_mm(STEPS_PER_MM);
     return stepper;
 }
@@ -350,14 +340,14 @@ static Stepper *create_lane_2_stepper(UART_Tx *tx) {
     Output *step = new GPOutput(PIN_M2_STEP);
     dir->set_is_inverted(M2_DIR_INVERT);
     configure_tmc(tx, PIN_M2_ADDRESS);
-    Stepper *stepper = new Stepper(enable, dir, step, "stepper-2", STEPPER_PRIORITY);
+    Stepper *stepper = new Stepper(enable, dir, step, "stepper-2");
     stepper->set_steps_per_mm(STEPS_PER_MM);
     return stepper;
 }
 
 class Coordinator : ThreadInterruptNotifier {
 public:
-    Coordinator() : ThreadInterruptNotifier("coordinator", COORDINATOR_PRIORITY) {
+    Coordinator() : ThreadInterruptNotifier("coordinator") {
 	tx = new UART_Tx(TMC_UART_TX, 115200);
 	output_switches = new OutputSwitches(this);
 	lane_1_switches = new LaneSwitches(PIN_L1_IN, PIN_L1_OUT, this);
