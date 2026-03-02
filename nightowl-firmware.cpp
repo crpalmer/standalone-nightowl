@@ -437,10 +437,47 @@ private:
     Lane *active_lane = NULL;
 };
 
+class StateDumper : public PiThread {
+public:
+    StateDumper(Coordinator *coordinator) : PiThread("state-dumper"), coordinator(coordinator) {
+	lock = new PiMutex();
+	cond = new PiCond();
+	start();
+    }
+
+    void main(void) {
+	lock->lock();
+	while (1) {
+	    while (! enabled) {
+		cond->wait(lock);
+	    }
+	    coordinator->dump_state();
+	    ms_sleep(5000);
+	}
+    }
+
+    void enable() {
+	enabled = true;
+	cond->signal();
+    }
+
+    void disable() {
+	enabled = false;
+    }
+
+private:
+    Coordinator *coordinator;
+    PiMutex *lock;
+    PiCond *cond;
+    bool enabled = false;
+};
+
 static void threads_main(int argc, char **argv) {
     ms_sleep(2000);
     printf("Starting\n");
     Coordinator *coordinator = new Coordinator();
+    StateDumper *state_dumper = new StateDumper(coordinator);
+
     printf("Created coordinator, entering interactive loop.\n");
     while (1) {
 	static char line[1024];
@@ -453,6 +490,11 @@ static void threads_main(int argc, char **argv) {
 		coordinator->dump_state();
 	    } else if (strcmp(line, "threads") == 0) {
 		pi_threads_dump_state();
+	    } else if (strncmp(line, "state-dumper", 12) == 0) {
+		int enabled = true;
+		sscanf(&line[12], "%d", &enabled);
+		if (enabled) state_dumper->enable();
+		else state_dumper->disable();
 	    } else if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0) {
 		printf("bootsel: reboot to bootloader mode\n");
 		printf("state: dump state\n");
