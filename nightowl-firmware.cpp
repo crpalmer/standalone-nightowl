@@ -52,7 +52,7 @@
 static const int microstepping = 16;
 #define STEPS_PER_MM	(680*microstepping/16)
 
-#define ACTIVE_INIT_MM	5000
+#define ACTIVE_INIT_MM	2500
 
 #define PRELOAD_SPEED	5		// mm/sec
 #define LOADING_SPEED	10
