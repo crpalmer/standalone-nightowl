@@ -203,6 +203,7 @@ public:
 		if (is_loaded) state = LOADING;
 		else if (! is_present) state = EMPTY;
 		else feed = LOADING_SPEED;
+		stepper->reset_n_steps();
 		break;
 	    case LOADING:
 		// TODO: add a timeout in case the filament just isn't loadable and then do something (what??)
@@ -272,7 +273,9 @@ public:
 	printf("%s: %s", name, state_to_string(state));
 	lane_switches->dump_state();
 	if (is_active()) output_switches->dump_state();
-	printf("\n");
+	printf(" << ");
+	stepper->dump_state();
+	printf(" >>");
     }
 
     void error() {
@@ -405,8 +408,10 @@ public:
 	printf("======== Current State ===============\n");
 	if (active_lane) printf("%s: ", lane_1 == active_lane ? "ACTIVE" : "      ");
 	lane_1->dump_state();
+	printf("\n");
 	if (active_lane) printf("%s: ", lane_2 == active_lane ? "ACTIVE" : "      ");
 	lane_2->dump_state();
+	printf("\n");
 	printf("all switches: lane_1:");
 	lane_1_switches->dump_state();
 	printf(" || lane_2:");
