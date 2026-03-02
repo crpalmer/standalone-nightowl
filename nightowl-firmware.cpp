@@ -313,7 +313,7 @@ private:
 static void configure_tmc(UART_Tx *tx, int address) {
     TMC2209 *tmc = new TMC2209(tx, address);
     tmc->set_microstepping(microstepping);
-    tmc->set_rms_current(200);
+    tmc->set_rms_current(500);
 }
 
 static Stepper *create_lane_1_stepper(UART_Tx *tx) {
